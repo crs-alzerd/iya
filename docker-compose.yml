@@ -1,0 +1,50 @@
+name: iya-next-clean
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: iya-next-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-iya}
+      POSTGRES_USER: ${POSTGRES_USER:-iya}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - iya_next_postgres_data:/var/lib/postgresql/data
+    networks:
+      - iya_next_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iya} -d ${POSTGRES_DB:-iya}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: iya-next-clean-app:latest
+    container_name: iya-next-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./prompts:/app/prompts:ro
+    networks:
+      - iya_next_net
+    command: >
+      sh -c "alembic upgrade head && python -m iya_bot.main"
+
+volumes:
+  iya_next_postgres_data:
+    name: iya_next_postgres_data
+
+networks:
+  iya_next_net:
+    name: iya_next_net
+    driver: bridge
