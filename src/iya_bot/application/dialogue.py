@@ -51,6 +51,7 @@ class DialogueService:
         first_name: str | None,
         last_name: str | None,
         text: str,
+        image_data_url: str | None = None,
     ) -> str:
         await self.register_user(
             telegram_id=telegram_user_id,
@@ -59,7 +60,11 @@ class DialogueService:
             last_name=last_name,
         )
 
-        await self._messages.add_message(telegram_user_id, "user", text)
+        stored_user_text = text
+        if image_data_url is not None:
+            stored_user_text = f"{text}\n[Пользователь отправил изображение.]".strip()
+
+        await self._messages.add_message(telegram_user_id, "user", stored_user_text)
 
         recent = await self._messages.get_recent_messages(
             telegram_user_id=telegram_user_id,
@@ -75,16 +80,45 @@ class DialogueService:
             conversation_summary=summary,
             recent=recent,
         )
+        if image_data_url is not None:
+            prompt_messages = self._with_current_image(
+                prompt_messages=prompt_messages,
+                user_text=text,
+                image_data_url=image_data_url,
+            )
         response = await self._llm.complete(prompt_messages)
 
         await self._messages.add_message(telegram_user_id, "assistant", response)
         await self._update_conversation_summary(
             telegram_user_id=telegram_user_id,
             previous_summary=summary,
-            user_text=text,
+            user_text=stored_user_text,
             assistant_text=response,
         )
         return response
+
+    def _with_current_image(
+        self,
+        prompt_messages: list[ChatMessage],
+        user_text: str,
+        image_data_url: str,
+    ) -> list[ChatMessage]:
+        if not prompt_messages:
+            return prompt_messages
+
+        content = [
+            {
+                "type": "text",
+                "text": user_text.strip() or "Опиши изображение и ответь на него по контексту диалога.",
+            },
+            {
+                "type": "image_url",
+                "image_url": {"url": image_data_url},
+            },
+        ]
+        updated = list(prompt_messages)
+        updated[-1] = ChatMessage(role="user", content=content)
+        return updated
 
     def _build_prompt_messages(
         self,

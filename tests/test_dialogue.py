@@ -27,6 +27,9 @@ class FakeUserRepository:
             }
         )
 
+    async def list_user_ids(self, limit: int = 100) -> list[int]:
+        return [int(user["telegram_id"]) for user in self.users[-limit:]]
+
 
 class FakeMessageRepository:
     def __init__(self) -> None:
@@ -37,6 +40,11 @@ class FakeMessageRepository:
 
     async def get_recent_messages(self, telegram_user_id: int, limit: int) -> list[ChatMessage]:
         return self.messages[-limit:]
+
+    async def prune_old_messages(self, telegram_user_id: int, keep_last: int) -> int:
+        removed = max(0, len(self.messages) - keep_last)
+        self.messages = self.messages[-keep_last:] if keep_last > 0 else []
+        return removed
 
 
 class FakeMemoryRepository:
@@ -55,6 +63,9 @@ class FakeMemoryRepository:
 
     async def upsert_conversation_summary(self, telegram_user_id: int, content: str) -> None:
         self.summary = content
+
+    async def replace_memories(self, telegram_user_id: int, memories: list[str]) -> None:
+        self.memories = memories
 
 
 class FakeLLMClient:
@@ -119,3 +130,35 @@ async def test_remember_rejects_empty_memory(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="пустую память"):
         await dialogue.remember(42, "   ")
+
+
+async def test_answer_can_send_current_image_to_llm(tmp_path: Path) -> None:
+    prompt = tmp_path / "system.md"
+    prompt.write_text("Системный промпт", encoding="utf-8")
+    messages = FakeMessageRepository()
+    memories = FakeMemoryRepository(memories=[], summary=None)
+    llm = FakeLLMClient(["Ответ по картинке", "Выжимка с картинкой"])
+    dialogue = DialogueService(
+        users=FakeUserRepository(),
+        messages=messages,
+        memories=memories,
+        llm=llm,
+        history_limit=20,
+        system_prompt_path=str(prompt),
+    )
+
+    response = await dialogue.answer(
+        telegram_user_id=42,
+        username=None,
+        first_name=None,
+        last_name=None,
+        text="Что на фото?",
+        image_data_url="data:image/jpeg;base64,abc",
+    )
+
+    assert response == "Ответ по картинке"
+    current_user_message = llm.calls[0][-1]
+    assert current_user_message.role == "user"
+    assert isinstance(current_user_message.content, list)
+    assert current_user_message.content[1]["image_url"]["url"] == "data:image/jpeg;base64,abc"
+    assert messages.messages[0].content == "Что на фото?\n[Пользователь отправил изображение.]"

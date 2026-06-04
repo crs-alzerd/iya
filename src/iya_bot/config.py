@@ -24,7 +24,15 @@ class Settings(BaseSettings):
     history_limit: int = Field(default=20, alias="HISTORY_LIMIT")
     system_prompt_path: str = Field(default="/app/prompts/iya_system.md", alias="SYSTEM_PROMPT_PATH")
     reminder_scan_interval_seconds: int = Field(default=10, alias="REMINDER_SCAN_INTERVAL_SECONDS")
-
+    proactive_enabled: bool = Field(default=True, alias="PROACTIVE_ENABLED")
+    proactive_scan_interval_seconds: int = Field(default=60, alias="PROACTIVE_SCAN_INTERVAL_SECONDS")
+    proactive_min_delay_minutes: int = Field(default=180, alias="PROACTIVE_MIN_DELAY_MINUTES")
+    proactive_max_delay_minutes: int = Field(default=720, alias="PROACTIVE_MAX_DELAY_MINUTES")
+    reflection_enabled: bool = Field(default=True, alias="REFLECTION_ENABLED")
+    reflection_interval_minutes: int = Field(default=360, alias="REFLECTION_INTERVAL_MINUTES")
+    reflection_user_limit: int = Field(default=20, alias="REFLECTION_USER_LIMIT")
+    reflection_keep_recent_messages: int = Field(default=200, alias="REFLECTION_KEEP_RECENT_MESSAGES")
+    telegram_image_max_bytes: int = Field(default=5_000_000, alias="TELEGRAM_IMAGE_MAX_BYTES")
 
     @field_validator("owner_telegram_id", mode="before")
     @classmethod
