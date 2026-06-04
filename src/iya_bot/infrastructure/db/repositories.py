@@ -6,7 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from iya_bot.application.ports import MemoryRepository, MessageRepository, ReminderRepository, UserRepository
 from iya_bot.domain.models import ChatMessage
-from iya_bot.infrastructure.db.models import MessageORM, PinnedMemoryORM, ReminderORM, TelegramUserORM
+from iya_bot.infrastructure.db.models import (
+    ConversationSummaryORM,
+    MessageORM,
+    PinnedMemoryORM,
+    ReminderORM,
+    TelegramUserORM,
+)
 
 
 class SqlAlchemyUserRepository(UserRepository):
@@ -100,6 +106,34 @@ class SqlAlchemyMemoryRepository(MemoryRepository):
 
         rows.reverse()
         return [row.content for row in rows]
+
+    async def get_conversation_summary(self, telegram_user_id: int) -> str | None:
+        stmt = select(ConversationSummaryORM.content).where(
+            ConversationSummaryORM.telegram_user_id == telegram_user_id
+        )
+
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+
+        return result.scalar_one_or_none()
+
+    async def upsert_conversation_summary(self, telegram_user_id: int, content: str) -> None:
+        stmt = insert(ConversationSummaryORM).values(
+            telegram_user_id=telegram_user_id,
+            content=content,
+            updated_at=datetime.now(UTC),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[ConversationSummaryORM.telegram_user_id],
+            set_={
+                "content": content,
+                "updated_at": datetime.now(UTC),
+            },
+        )
+
+        async with self._session_factory() as session:
+            await session.execute(stmt)
+            await session.commit()
 
 
 class SqlAlchemyReminderRepository(ReminderRepository):

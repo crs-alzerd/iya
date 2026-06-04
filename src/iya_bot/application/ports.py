@@ -42,6 +42,14 @@ class MemoryRepository(ABC):
     async def get_memories(self, telegram_user_id: int, limit: int = 20) -> list[str]:
         raise NotImplementedError
 
+    @abstractmethod
+    async def get_conversation_summary(self, telegram_user_id: int) -> str | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def upsert_conversation_summary(self, telegram_user_id: int, content: str) -> None:
+        raise NotImplementedError
+
 
 class ReminderRepository(ABC):
     @abstractmethod
