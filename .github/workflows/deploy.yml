@@ -1,0 +1,87 @@
+name: Deploy Iya to VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: iya-vps-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prepare SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/iya_actions_deploy
+          chmod 600 ~/.ssh/iya_actions_deploy
+
+          ssh-keyscan -p "${{ secrets.VPS_PORT }}" -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy over SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          ssh \
+            -i ~/.ssh/iya_actions_deploy \
+            -p "${{ secrets.VPS_PORT }}" \
+            -o IdentitiesOnly=yes \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'bash -s' << 'EOF'
+          set -Eeuo pipefail
+
+          APP_DIR="/opt/iya-next-clean"
+
+          echo "==> Entering app directory"
+          cd "$APP_DIR"
+
+          echo "==> Checking git state"
+          git status --short
+
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "ERROR: working tree is dirty. Refusing to deploy."
+            git status --short
+            exit 1
+          fi
+
+          echo "==> Fetching latest code"
+          git fetch origin main
+
+          echo "==> Current commit"
+          git rev-parse --short HEAD
+
+          echo "==> Target commit"
+          git rev-parse --short origin/main
+
+          echo "==> Updating main branch"
+          git checkout main
+          git pull --ff-only origin main
+
+          echo "==> Checking .env"
+          test -f .env
+
+          echo "==> Validating docker compose config"
+          docker compose config >/dev/null
+
+          echo "==> Rebuilding and restarting containers"
+          docker compose up -d --build --remove-orphans
+
+          echo "==> Containers status"
+          docker compose ps
+
+          echo "==> Recent app logs"
+          docker compose logs --tail=80 app
+          EOF
