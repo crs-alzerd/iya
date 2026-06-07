@@ -2,6 +2,10 @@ import logging
 
 from iya_bot.application.prompt_loader import load_system_prompt
 from iya_bot.application.ports import LLMClient, MemoryRepository, MessageRepository, UserRepository
+<<<<<<< HEAD
+=======
+from iya_bot.application.runtime_context import build_runtime_context, current_time_in
+>>>>>>> 1917e25 (Rebuilt full)
 from iya_bot.domain.models import ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -16,6 +20,11 @@ class DialogueService:
         llm: LLMClient,
         history_limit: int,
         system_prompt_path: str | None = None,
+<<<<<<< HEAD
+=======
+        runtime_context_enabled: bool = True,
+        timezone_name: str = "Europe/Moscow",
+>>>>>>> 1917e25 (Rebuilt full)
     ) -> None:
         self._users = users
         self._messages = messages
@@ -23,6 +32,11 @@ class DialogueService:
         self._llm = llm
         self._history_limit = history_limit
         self._system_prompt = load_system_prompt(system_prompt_path)
+<<<<<<< HEAD
+=======
+        self._runtime_context_enabled = runtime_context_enabled
+        self._timezone_name = timezone_name
+>>>>>>> 1917e25 (Rebuilt full)
 
     async def register_user(
         self,
@@ -146,9 +160,31 @@ class DialogueService:
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content="\n\n".join(blocks))
         ]
+<<<<<<< HEAD
         messages.extend(recent)
         return messages
 
+=======
+
+        runtime = self._runtime_context_message()
+        if runtime is not None:
+            messages.append(runtime)
+
+        messages.extend(recent)
+        return messages
+
+    def _runtime_context_message(self) -> ChatMessage | None:
+        if not self._runtime_context_enabled:
+            return None
+        now = current_time_in(self._timezone_name)
+        content = build_runtime_context(
+            now=now,
+            timezone_name=self._timezone_name,
+            include_time=now is not None,
+        )
+        return ChatMessage(role="system", content=content)
+
+>>>>>>> 1917e25 (Rebuilt full)
     async def _update_conversation_summary(
         self,
         telegram_user_id: int,

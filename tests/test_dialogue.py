@@ -116,7 +116,72 @@ async def test_answer_sends_pinned_memory_and_db_summary_to_llm(tmp_path: Path) 
     assert memories.summary == "Новая краткая выжимка"
 
 
+<<<<<<< HEAD
 async def test_remember_rejects_empty_memory(tmp_path: Path) -> None:
+=======
+async def test_runtime_context_injected_without_breaking_prompt_order(tmp_path: Path) -> None:
+    prompt = tmp_path / "system.md"
+    prompt.write_text("Системный промпт", encoding="utf-8")
+    messages = FakeMessageRepository()
+    memories = FakeMemoryRepository(memories=[], summary=None)
+    llm = FakeLLMClient(["Ответ", "Выжимка"])
+    dialogue = DialogueService(
+        users=FakeUserRepository(),
+        messages=messages,
+        memories=memories,
+        llm=llm,
+        history_limit=20,
+        system_prompt_path=str(prompt),
+        runtime_context_enabled=True,
+        timezone_name="Europe/Moscow",
+    )
+
+    await dialogue.answer(
+        telegram_user_id=7,
+        username=None,
+        first_name=None,
+        last_name=None,
+        text="привет",
+    )
+
+    call = llm.calls[0]
+    # Индекс 0 — по-прежнему основной системный промпт.
+    assert call[0].role == "system"
+    assert "Системный промпт" in call[0].content
+    # Есть второй system-блок с анти-повтором.
+    assert any(
+        m.role == "system" and "повтор" in str(m.content).lower() for m in call[1:]
+    )
+    # Последнее сообщение — реплика пользователя.
+    assert call[-1] == ChatMessage(role="user", content="привет")
+
+
+async def test_runtime_context_can_be_disabled(tmp_path: Path) -> None:
+    prompt = tmp_path / "system.md"
+    prompt.write_text("Системный промпт", encoding="utf-8")
+    llm = FakeLLMClient(["Ответ", "Выжимка"])
+    dialogue = DialogueService(
+        users=FakeUserRepository(),
+        messages=FakeMessageRepository(),
+        memories=FakeMemoryRepository(memories=[], summary=None),
+        llm=llm,
+        history_limit=20,
+        system_prompt_path=str(prompt),
+        runtime_context_enabled=False,
+    )
+
+    await dialogue.answer(
+        telegram_user_id=7,
+        username=None,
+        first_name=None,
+        last_name=None,
+        text="привет",
+    )
+
+    call = llm.calls[0]
+    system_blocks = [m for m in call if m.role == "system"]
+    assert len(system_blocks) == 1
+>>>>>>> 1917e25 (Rebuilt full)
     prompt = tmp_path / "system.md"
     prompt.write_text("Системный промпт", encoding="utf-8")
     dialogue = DialogueService(

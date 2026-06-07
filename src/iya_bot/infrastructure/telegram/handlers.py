@@ -1,3 +1,7 @@
+<<<<<<< HEAD
+=======
+import asyncio
+>>>>>>> 1917e25 (Rebuilt full)
 import logging
 from base64 import b64encode
 from io import BytesIO
@@ -9,6 +13,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from iya_bot.application.dialogue import DialogueService
+<<<<<<< HEAD
+=======
+from iya_bot.application.humanize import split_into_messages, typing_delay_seconds
+>>>>>>> 1917e25 (Rebuilt full)
 from iya_bot.application.proactive import ProactiveService
 from iya_bot.application.reflection import ReflectionService
 from iya_bot.application.reminders import ReminderParseError, ReminderService
@@ -219,11 +227,50 @@ def build_router(
             )
             return
 
+<<<<<<< HEAD
         await message.answer(answer)
+=======
+        await _send_humanized(message, answer, settings)
+>>>>>>> 1917e25 (Rebuilt full)
 
     return router
 
 
+<<<<<<< HEAD
+=======
+async def _send_humanized(message: Message, answer: str, settings: Settings) -> None:
+    """Отправить ответ как живой человек: несколько реплик с набором текста.
+
+    Если humanize выключен — отправляем одним сообщением (но всё равно с
+    безопасной нарезкой по лимиту Telegram, чтобы длинный ответ не упал).
+    """
+    if not settings.humanize_enabled:
+        chunks = split_into_messages(answer, max_chunks=1)
+    else:
+        chunks = split_into_messages(answer, max_chunks=settings.humanize_max_chunks)
+
+    if not chunks:
+        return
+
+    for index, chunk in enumerate(chunks):
+        if settings.humanize_enabled and index > 0:
+            try:
+                await message.bot.send_chat_action(
+                    chat_id=message.chat.id, action="typing"
+                )
+            except Exception:
+                logger.debug("send_chat_action failed", exc_info=True)
+            delay = typing_delay_seconds(
+                chunk,
+                ms_per_char=settings.humanize_ms_per_char,
+                min_seconds=settings.humanize_min_delay_seconds,
+                max_seconds=settings.humanize_max_delay_seconds,
+            )
+            await asyncio.sleep(delay)
+        await message.answer(chunk)
+
+
+>>>>>>> 1917e25 (Rebuilt full)
 def _command_payload(text: str, command: str) -> str:
     if not text:
         return ""

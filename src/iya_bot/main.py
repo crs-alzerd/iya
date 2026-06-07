@@ -19,7 +19,14 @@ from iya_bot.infrastructure.db.repositories import (
     SqlAlchemyUserRepository,
 )
 from iya_bot.infrastructure.db.session import create_engine, create_session_factory
+<<<<<<< HEAD
 from iya_bot.infrastructure.llm.openai_compatible import OpenAICompatibleClient
+=======
+from iya_bot.infrastructure.llm.openai_compatible import (
+    LLMSamplingParams,
+    OpenAICompatibleClient,
+)
+>>>>>>> 1917e25 (Rebuilt full)
 from iya_bot.infrastructure.scheduler.proactive_jobs import ProactiveJobRunner
 from iya_bot.infrastructure.scheduler.reflection_jobs import ReflectionJobRunner
 from iya_bot.infrastructure.scheduler.reminder_jobs import ReminderJobRunner
@@ -50,6 +57,16 @@ async def main() -> None:
         api_key=settings.llm_api_key.get_secret_value(),
         model=settings.llm_model,
         timeout_seconds=settings.llm_timeout_seconds,
+<<<<<<< HEAD
+=======
+        sampling=LLMSamplingParams(
+            temperature=settings.llm_temperature,
+            top_p=settings.llm_top_p,
+            presence_penalty=settings.llm_presence_penalty,
+            frequency_penalty=settings.llm_frequency_penalty,
+            max_tokens=settings.llm_max_tokens,
+        ),
+>>>>>>> 1917e25 (Rebuilt full)
     )
 
     dialogue = DialogueService(
@@ -59,6 +76,11 @@ async def main() -> None:
         llm=llm,
         history_limit=settings.history_limit,
         system_prompt_path=settings.system_prompt_path,
+<<<<<<< HEAD
+=======
+        runtime_context_enabled=settings.runtime_context_enabled,
+        timezone_name=effective_timezone(settings),
+>>>>>>> 1917e25 (Rebuilt full)
     )
     reminder_service = ReminderService(reminder_repo)
     proactive_service = ProactiveService(
@@ -69,6 +91,11 @@ async def main() -> None:
         history_limit=settings.history_limit,
         min_delay_minutes=settings.proactive_min_delay_minutes,
         max_delay_minutes=settings.proactive_max_delay_minutes,
+<<<<<<< HEAD
+=======
+        timezone_name=effective_timezone(settings),
+        runtime_context_enabled=settings.runtime_context_enabled,
+>>>>>>> 1917e25 (Rebuilt full)
     )
     reflection_service = ReflectionService(
         users=users,

@@ -7,6 +7,10 @@ from iya_bot.application.ports import (
     MessageRepository,
     ProactiveEventRepository,
 )
+<<<<<<< HEAD
+=======
+from iya_bot.application.runtime_context import current_time_in, time_context_line
+>>>>>>> 1917e25 (Rebuilt full)
 from iya_bot.domain.models import ChatMessage
 
 PROACTIVE_KIND_CHECK_IN = "check_in"
@@ -22,6 +26,11 @@ class ProactiveService:
         history_limit: int,
         min_delay_minutes: int,
         max_delay_minutes: int,
+<<<<<<< HEAD
+=======
+        timezone_name: str = "Europe/Moscow",
+        runtime_context_enabled: bool = True,
+>>>>>>> 1917e25 (Rebuilt full)
     ) -> None:
         self._events = events
         self._messages = messages
@@ -30,6 +39,11 @@ class ProactiveService:
         self._history_limit = history_limit
         self._min_delay_minutes = min_delay_minutes
         self._max_delay_minutes = max(min_delay_minutes, max_delay_minutes)
+<<<<<<< HEAD
+=======
+        self._timezone_name = timezone_name
+        self._runtime_context_enabled = runtime_context_enabled
+>>>>>>> 1917e25 (Rebuilt full)
 
     async def ensure_next_check_in(self, telegram_user_id: int, chat_id: int) -> None:
         has_pending = await self._events.has_pending_event(
@@ -56,6 +70,13 @@ class ProactiveService:
         summary = await self._memories.get_conversation_summary(telegram_user_id)
 
         context_blocks = []
+<<<<<<< HEAD
+=======
+        if self._runtime_context_enabled:
+            now = current_time_in(self._timezone_name)
+            if now is not None:
+                context_blocks.append(time_context_line(now, self._timezone_name))
+>>>>>>> 1917e25 (Rebuilt full)
         if memories:
             context_blocks.append(
                 "Закреплённая память:\n" + "\n".join(f"- {item}" for item in memories)

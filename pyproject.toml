@@ -4,7 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "iya-next-clean"
+<<<<<<< HEAD
 version = "0.1.1"
+=======
+version = "0.2.0"
+>>>>>>> 1917e25 (Rebuilt full)
 description = "Clean architecture Telegram assistant prototype for Iya"
 requires-python = ">=3.12"
 dependencies = [

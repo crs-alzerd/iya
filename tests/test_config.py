@@ -33,3 +33,29 @@ def test_effective_timezone_prefers_bot_timezone() -> None:
     settings = _settings(TZ="Europe/Paris", BOT_TIMEZONE="Europe/Moscow")
 
     assert effective_timezone(settings) == "Europe/Moscow"
+<<<<<<< HEAD
+=======
+
+
+def test_sampling_defaults_enable_anti_repetition_penalties() -> None:
+    settings = _settings()
+
+    assert settings.llm_presence_penalty == 0.4
+    assert settings.llm_frequency_penalty == 0.5
+    assert settings.llm_temperature == 0.85
+
+
+def test_optional_sampling_params_default_to_none() -> None:
+    settings = _settings(LLM_TOP_P="", LLM_MAX_TOKENS="")
+
+    assert settings.llm_top_p is None
+    assert settings.llm_max_tokens is None
+
+
+def test_humanize_defaults() -> None:
+    settings = _settings()
+
+    assert settings.humanize_enabled is True
+    assert settings.humanize_max_chunks == 3
+    assert settings.runtime_context_enabled is True
+>>>>>>> 1917e25 (Rebuilt full)
