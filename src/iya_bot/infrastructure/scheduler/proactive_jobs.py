@@ -23,11 +23,14 @@ class ProactiveJobRunner:
     async def send_due_events(self) -> None:
         if self._locked:
             return
-
         self._locked = True
         try:
             events = await self._due_repository.get_due_pending(limit=10)
             for event in events:
+                # Manifest v2 idempotency: mark fired before sending.
+                # If another run already fired this event, skip it.
+                if not await self._due_repository.mark_fired(event.id):
+                    continue
                 try:
                     if event.kind != PROACTIVE_KIND_CHECK_IN:
                         await self._due_repository.mark_failed(event.id)

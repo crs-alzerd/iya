@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: iya-next-clean
+Version: 0.3.0
+Summary: Clean architecture Telegram assistant prototype for Iya
+Requires-Python: >=3.12
+Requires-Dist: aiogram<4,>=3.15
+Requires-Dist: SQLAlchemy<3,>=2.0
+Requires-Dist: asyncpg<1,>=0.29
+Requires-Dist: alembic<2,>=1.13
+Requires-Dist: pydantic<3,>=2.8
+Requires-Dist: pydantic-settings<3,>=2.4
+Requires-Dist: httpx<1,>=0.27
+Requires-Dist: APScheduler<4,>=3.10
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8; extra == "dev"
+Requires-Dist: pytest-asyncio<1,>=0.24; extra == "dev"

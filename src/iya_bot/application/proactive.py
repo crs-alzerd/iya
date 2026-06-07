@@ -8,6 +8,7 @@ from iya_bot.application.ports import (
     ProactiveEventRepository,
 )
 from iya_bot.application.runtime_context import current_time_in, time_context_line
+from iya_bot.domain.enums import LLMRequestKind
 from iya_bot.domain.models import ChatMessage
 
 PROACTIVE_KIND_CHECK_IN = "check_in"
@@ -44,12 +45,15 @@ class ProactiveService:
         if has_pending:
             return
 
+        planned_at = self._next_planned_at()
+        dedup_key = f"{telegram_user_id}:{PROACTIVE_KIND_CHECK_IN}:{planned_at.isoformat(timespec='minutes')}"
         await self._events.schedule_event(
             telegram_user_id=telegram_user_id,
             chat_id=chat_id,
             kind=PROACTIVE_KIND_CHECK_IN,
-            planned_at=self._next_planned_at(),
-            payload={},
+            planned_at=planned_at,
+            payload={"reason": "idle_check_in_v1"},
+            dedup_key=dedup_key,
         )
 
     async def generate_check_in(self, telegram_user_id: int) -> str:
@@ -66,9 +70,7 @@ class ProactiveService:
             if now is not None:
                 context_blocks.append(time_context_line(now, self._timezone_name))
         if memories:
-            context_blocks.append(
-                "Закреплённая память:\n" + "\n".join(f"- {item}" for item in memories)
-            )
+            context_blocks.append("Закреплённая память:\n" + "\n".join(f"- {item}" for item in memories))
         if summary:
             context_blocks.append("Выжимка диалога:\n" + summary)
 
@@ -77,25 +79,18 @@ class ProactiveService:
                 role="system",
                 content=(
                     "Ты Ия и пишешь пользователю спонтанное сообщение в Telegram. "
-                    "Пиши только если это выглядит уместно по контексту. Сообщение "
-                    "должно быть коротким, живым и полезным: вопрос, мягкая проверка "
-                    "статуса, мысль по проекту или напоминание о незакрытом контексте. "
-                    "Не упоминай, что сообщение сгенерировано планировщиком. "
-                    "Максимум 500 символов."
+                    "Manifest v2: сообщение должно выглядеть мотивированным, будто ты заметила повод, "
+                    "а не будто сработал cron. Если по контексту повода нет, напиши очень коротко и ненавязчиво. "
+                    "Не упоминай планировщик. Максимум 500 символов."
                 ),
             )
         ]
         if context_blocks:
             prompt.append(ChatMessage(role="system", content="\n\n".join(context_blocks)))
         prompt.extend(recent)
-        prompt.append(
-            ChatMessage(
-                role="user",
-                content="Сформулируй одно спонтанное сообщение пользователю сейчас.",
-            )
-        )
+        prompt.append(ChatMessage(role="user", content="Сформулируй одно уместное спонтанное сообщение пользователю сейчас."))
 
-        response = await self._llm.complete(prompt)
+        response = await self._llm.complete(prompt, kind=LLMRequestKind.PROACTIVE, telegram_user_id=telegram_user_id)
         return response.strip()
 
     async def record_sent_check_in(self, telegram_user_id: int, text: str) -> None:

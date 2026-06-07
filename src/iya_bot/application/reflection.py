@@ -2,6 +2,7 @@ import json
 import logging
 
 from iya_bot.application.ports import LLMClient, MemoryRepository, MessageRepository, UserRepository
+from iya_bot.domain.enums import LLMRequestKind
 from iya_bot.domain.models import ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -25,23 +26,26 @@ class ReflectionService:
         self._keep_recent_messages = keep_recent_messages
 
     async def reflect_user(self, telegram_user_id: int) -> bool:
-        pinned = await self._memories.get_memories(
-            telegram_user_id=telegram_user_id,
-            limit=self._memory_limit,
-        )
+        pinned = await self._memories.get_memories(telegram_user_id=telegram_user_id, limit=self._memory_limit)
         summary = await self._memories.get_conversation_summary(telegram_user_id)
         if not pinned and not summary:
+            return False
+
+        # Manifest v2 safety: snapshot before destructive memory rewrite.
+        try:
+            await self._memories.create_memory_snapshot(telegram_user_id, reason="reflection_before_rewrite")
+        except Exception:
+            logger.exception("Failed to create memory snapshot before reflection for telegram_user_id=%s", telegram_user_id)
             return False
 
         messages = [
             ChatMessage(
                 role="system",
                 content=(
-                    "Ты выполняешь рефлексию памяти ассистента. Нужно удалить шум, "
-                    "дубли, устаревшие детали и временные факты. Оставь только то, "
-                    "что пригодится в будущих диалогах: устойчивые сведения о "
-                    "пользователе, проекте, предпочтениях, решениях, важных открытых "
-                    "задачах. Верни только JSON без markdown."
+                    "Ты выполняешь рефлексию памяти ассистента. Нужно удалить шум, дубли, устаревшие детали и временные факты. "
+                    "Оставь только то, что пригодится в будущих диалогах: устойчивые сведения о пользователе, проекте, предпочтениях, "
+                    "решениях, важных открытых задачах. Manifest v2: не выдумывай новые факты, не стирай спорное без причины. "
+                    "Верни только JSON без markdown."
                 ),
             ),
             ChatMessage(
@@ -58,24 +62,18 @@ class ReflectionService:
         ]
 
         try:
-            raw = await self._llm.complete(messages)
+            raw = await self._llm.complete(messages, kind=LLMRequestKind.REFLECTION, telegram_user_id=telegram_user_id)
             payload = _parse_json_object(raw)
             new_pinned = _clean_memory_list(payload.get("pinned_memories"))
             new_summary = _clean_summary(payload.get("conversation_summary"))
         except Exception:
-            logger.exception(
-                "Failed to reflect memory for telegram_user_id=%s",
-                telegram_user_id,
-            )
+            logger.exception("Failed to reflect memory for telegram_user_id=%s", telegram_user_id)
             return False
 
         await self._memories.replace_memories(telegram_user_id, new_pinned)
         if summary is not None or new_summary:
             await self._memories.upsert_conversation_summary(telegram_user_id, new_summary)
-        await self._messages.prune_old_messages(
-            telegram_user_id=telegram_user_id,
-            keep_last=self._keep_recent_messages,
-        )
+        await self._messages.prune_old_messages(telegram_user_id=telegram_user_id, keep_last=self._keep_recent_messages)
         return True
 
     async def reflect_recent_users(self, limit: int = 20) -> int:

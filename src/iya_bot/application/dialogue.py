@@ -1,9 +1,15 @@
+from __future__ import annotations
+
 import logging
 
-from iya_bot.application.prompt_loader import load_system_prompt
+from iya_bot.application.mode_router import ModeRouter
 from iya_bot.application.ports import LLMClient, MemoryRepository, MessageRepository, UserRepository
+from iya_bot.application.prompt_builder import PromptBuilder
+from iya_bot.application.prompt_loader import load_system_prompt
 from iya_bot.application.runtime_context import build_runtime_context, current_time_in
-from iya_bot.domain.models import ChatMessage
+from iya_bot.application.self_state import SelfStateService
+from iya_bot.domain.enums import LLMRequestKind
+from iya_bot.domain.models import ChatMessage, MemoryItem, RoutingDecision
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +25,10 @@ class DialogueService:
         system_prompt_path: str | None = None,
         runtime_context_enabled: bool = True,
         timezone_name: str = "Europe/Moscow",
+        mode_router: ModeRouter | None = None,
+        self_state: SelfStateService | None = None,
+        prompt_token_budget: int = 12_000,
+        prompt_builder_v2_enabled: bool = True,
     ) -> None:
         self._users = users
         self._messages = messages
@@ -28,6 +38,15 @@ class DialogueService:
         self._system_prompt = load_system_prompt(system_prompt_path)
         self._runtime_context_enabled = runtime_context_enabled
         self._timezone_name = timezone_name
+        self._mode_router = mode_router or ModeRouter()
+        self._self_state = self_state
+        self._prompt_builder_v2_enabled = prompt_builder_v2_enabled
+        self._prompt_builder = PromptBuilder(
+            self._system_prompt,
+            timezone_name=timezone_name,
+            token_budget=prompt_token_budget,
+            runtime_context_enabled=runtime_context_enabled,
+        )
 
     async def register_user(
         self,
@@ -65,6 +84,15 @@ class DialogueService:
             last_name=last_name,
         )
 
+        self_state = await self._self_state.get_state(telegram_user_id) if self._self_state else None
+        relationship = await self._self_state.get_relationship(telegram_user_id) if self._self_state else None
+        routing = self._mode_router.route(
+            text,
+            has_image=image_data_url is not None,
+            self_state=self_state,
+            relationship=relationship,
+        )
+
         stored_user_text = text
         if image_data_url is not None:
             stored_user_text = f"{text}\n[Пользователь отправил изображение.]".strip()
@@ -76,12 +104,15 @@ class DialogueService:
             limit=self._history_limit,
         )
         memories = await self._memories.get_memories(telegram_user_id=telegram_user_id)
-        summary = await self._memories.get_conversation_summary(
-            telegram_user_id=telegram_user_id
-        )
+        memory_facts = await self._safe_memory_facts(telegram_user_id)
+        summary = await self._memories.get_conversation_summary(telegram_user_id=telegram_user_id)
 
         prompt_messages = self._build_prompt_messages(
+            routing=routing,
+            self_state=self_state,
+            relationship=relationship,
             memories=memories,
+            memory_facts=memory_facts,
             conversation_summary=summary,
             recent=recent,
         )
@@ -91,9 +122,12 @@ class DialogueService:
                 user_text=text,
                 image_data_url=image_data_url,
             )
-        response = await self._llm.complete(prompt_messages)
+        request_kind = LLMRequestKind.VISION if image_data_url is not None else LLMRequestKind.DIALOGUE
+        response = await self._llm.complete(prompt_messages, kind=request_kind, telegram_user_id=telegram_user_id)
 
         await self._messages.add_message(telegram_user_id, "assistant", response)
+        if self._self_state is not None:
+            await self._self_state.update_after_turn(telegram_user_id, routing)
         await self._update_conversation_summary(
             telegram_user_id=telegram_user_id,
             previous_summary=summary,
@@ -101,6 +135,13 @@ class DialogueService:
             assistant_text=response,
         )
         return response
+
+    async def _safe_memory_facts(self, telegram_user_id: int) -> list[MemoryItem]:
+        try:
+            return await self._memories.list_memory_items(telegram_user_id, include_archived=False, limit=50)
+        except Exception:
+            logger.debug("Failed to load memory_facts; falling back to pinned memories", exc_info=True)
+            return []
 
     def _with_current_image(
         self,
@@ -127,35 +168,42 @@ class DialogueService:
 
     def _build_prompt_messages(
         self,
+        *,
+        routing: RoutingDecision,
+        self_state: object | None,
+        relationship: object | None,
         memories: list[str],
+        memory_facts: list[MemoryItem],
         conversation_summary: str | None,
         recent: list[ChatMessage],
     ) -> list[ChatMessage]:
-        blocks = [self._system_prompt]
+        if self._prompt_builder_v2_enabled:
+            return self._prompt_builder.build(
+                routing=routing,
+                self_state=self_state,  # type: ignore[arg-type]
+                relationship=relationship,  # type: ignore[arg-type]
+                memories=memories,
+                memory_facts=memory_facts,
+                conversation_summary=conversation_summary,
+                recent=recent,
+            )
 
+        blocks = [self._system_prompt]
         if memories:
             memory_block = "\n".join(f"- {item}" for item in memories)
             blocks.append(
-                "Закреплённая память о пользователе и проекте. "
-                "Используй её только когда она действительно релевантна:\n"
+                "Закреплённая память о пользователе и проекте. Используй её только когда она действительно релевантна:\n"
                 f"{memory_block}"
             )
-
         if conversation_summary:
             blocks.append(
-                "Краткая выжимка предыдущего диалога из базы данных. "
-                "Учитывай её как долговременный контекст, но не пересказывай пользователю без нужды:\n"
+                "Краткая выжимка предыдущего диалога из базы данных. Учитывай её как долговременный контекст, но не пересказывай пользователю без нужды:\n"
                 f"{conversation_summary}"
             )
-
-        messages: list[ChatMessage] = [
-            ChatMessage(role="system", content="\n\n".join(blocks))
-        ]
-
+        messages: list[ChatMessage] = [ChatMessage(role="system", content="\n\n".join(blocks))]
         runtime = self._runtime_context_message()
         if runtime is not None:
             messages.append(runtime)
-
         messages.extend(recent)
         return messages
 
@@ -163,11 +211,7 @@ class DialogueService:
         if not self._runtime_context_enabled:
             return None
         now = current_time_in(self._timezone_name)
-        content = build_runtime_context(
-            now=now,
-            timezone_name=self._timezone_name,
-            include_time=now is not None,
-        )
+        content = build_runtime_context(now=now, timezone_name=self._timezone_name, include_time=now is not None)
         return ChatMessage(role="system", content=content)
 
     async def _update_conversation_summary(
@@ -183,10 +227,8 @@ class DialogueService:
                 content=(
                     "Ты обновляешь долговременную память ассистента по диалогу. "
                     "На входе есть прежняя выжимка и новый обмен сообщениями. "
-                    "Верни только новую краткую выжимку без вступлений, "
-                    "markdown-заголовков и служебных комментариев. "
-                    "Сохраняй устойчивые факты о пользователе, проекте, "
-                    "предпочтениях, решениях, открытых задачах и важном контексте. "
+                    "Верни только новую краткую выжимку без вступлений, markdown-заголовков и служебных комментариев. "
+                    "Сохраняй устойчивые факты о пользователе, проекте, предпочтениях, решениях, открытых задачах и важном контексте. "
                     "Удаляй временный шум, повторы и устаревшие детали. Максимум 2500 символов."
                 ),
             ),
@@ -202,14 +244,14 @@ class DialogueService:
                 ),
             ),
         ]
-
         try:
-            updated_summary = await self._llm.complete(summary_messages)
+            updated_summary = await self._llm.complete(
+                summary_messages,
+                kind=LLMRequestKind.SUMMARY,
+                telegram_user_id=telegram_user_id,
+            )
             cleaned = updated_summary.strip()
             if cleaned:
                 await self._memories.upsert_conversation_summary(telegram_user_id, cleaned)
         except Exception:
-            logger.exception(
-                "Failed to update conversation summary for telegram_user_id=%s",
-                telegram_user_id,
-            )
+            logger.exception("Failed to update conversation summary for telegram_user_id=%s", telegram_user_id)
