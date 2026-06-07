@@ -13,9 +13,8 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr = Field(alias="LLM_API_KEY")
     llm_model: str = Field(alias="LLM_MODEL")
     llm_timeout_seconds: int = Field(default=60, alias="LLM_TIMEOUT_SECONDS")
+    llm_provider_name: str = Field(default="openai-compatible", alias="LLM_PROVIDER_NAME")
 
-    # Сэмплинг. presence/frequency penalty — главный рычаг против
-    # дословных повторов и зацикливания на одних и тех же жестах.
     llm_temperature: float = Field(default=0.85, alias="LLM_TEMPERATURE")
     llm_top_p: float | None = Field(default=None, alias="LLM_TOP_P")
     llm_presence_penalty: float | None = Field(default=0.4, alias="LLM_PRESENCE_PENALTY")
@@ -24,7 +23,7 @@ class Settings(BaseSettings):
 
     owner_telegram_id: int | None = Field(default=None, alias="OWNER_TELEGRAM_ID")
     app_env: str = Field(default="production", alias="APP_ENV")
-    app_version: str = Field(default="0.2.0", alias="APP_VERSION")
+    app_version: str = Field(default="0.3.0-manifest-v2", alias="APP_VERSION")
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     timezone: str = Field(default="Europe/Moscow", alias="TZ")
@@ -32,16 +31,12 @@ class Settings(BaseSettings):
     history_limit: int = Field(default=20, alias="HISTORY_LIMIT")
     system_prompt_path: str = Field(default="/app/prompts/iya_system.md", alias="SYSTEM_PROMPT_PATH")
 
-    # «Человеческая» подача: дробление ответа на несколько реплик с
-    # имитацией набора текста, как пишет живой собеседник в Telegram.
     humanize_enabled: bool = Field(default=True, alias="HUMANIZE_ENABLED")
     humanize_max_chunks: int = Field(default=3, alias="HUMANIZE_MAX_CHUNKS")
     humanize_ms_per_char: int = Field(default=22, alias="HUMANIZE_MS_PER_CHAR")
     humanize_min_delay_seconds: float = Field(default=0.6, alias="HUMANIZE_MIN_DELAY_SECONDS")
     humanize_max_delay_seconds: float = Field(default=4.0, alias="HUMANIZE_MAX_DELAY_SECONDS")
 
-    # Динамический контекст: текущее время/день недели и анти-повтор —
-    # подмешиваются в каждый запрос отдельным system-блоком.
     runtime_context_enabled: bool = Field(default=True, alias="RUNTIME_CONTEXT_ENABLED")
     reminder_scan_interval_seconds: int = Field(default=10, alias="REMINDER_SCAN_INTERVAL_SECONDS")
     proactive_enabled: bool = Field(default=True, alias="PROACTIVE_ENABLED")
@@ -53,6 +48,17 @@ class Settings(BaseSettings):
     reflection_user_limit: int = Field(default=20, alias="REFLECTION_USER_LIMIT")
     reflection_keep_recent_messages: int = Field(default=200, alias="REFLECTION_KEEP_RECENT_MESSAGES")
     telegram_image_max_bytes: int = Field(default=5_000_000, alias="TELEGRAM_IMAGE_MAX_BYTES")
+    vision_enabled: bool = Field(default=True, alias="VISION_ENABLED")
+
+    # Manifest v2 feature flags. Keep them explicit to allow staged rollout on VPS.
+    memory_facts_enabled: bool = Field(default=True, alias="MEMORY_FACTS_ENABLED")
+    self_state_enabled: bool = Field(default=True, alias="SELF_STATE_ENABLED")
+    relationship_state_enabled: bool = Field(default=True, alias="RELATIONSHIP_STATE_ENABLED")
+    mode_router_enabled: bool = Field(default=True, alias="MODE_ROUTER_ENABLED")
+    prompt_builder_v2_enabled: bool = Field(default=True, alias="PROMPT_BUILDER_V2_ENABLED")
+    llm_logging_enabled: bool = Field(default=True, alias="LLM_LOGGING_ENABLED")
+    motivated_proactive_enabled: bool = Field(default=False, alias="MOTIVATED_PROACTIVE_ENABLED")
+    prompt_token_budget: int = Field(default=12_000, alias="PROMPT_TOKEN_BUDGET")
 
     @field_validator("owner_telegram_id", mode="before")
     @classmethod

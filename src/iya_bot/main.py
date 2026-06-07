@@ -5,24 +5,28 @@ from aiogram import Bot, Dispatcher
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from iya_bot.application.dialogue import DialogueService
+from iya_bot.application.llm_router import LLMRouter
+from iya_bot.application.memory_control import MemoryControlService
+from iya_bot.application.mode_router import ModeRouter
 from iya_bot.application.proactive import ProactiveService
 from iya_bot.application.reflection import ReflectionService
 from iya_bot.application.reminders import ReminderService
+from iya_bot.application.self_state import SelfStateService
 from iya_bot.config import effective_timezone, get_settings
 from iya_bot.infrastructure.db.repositories import (
     ProactiveEventDueRepository,
     ReminderDueRepository,
-    SqlAlchemyProactiveEventRepository,
+    SqlAlchemyLLMRequestRepository,
     SqlAlchemyMemoryRepository,
     SqlAlchemyMessageRepository,
+    SqlAlchemyProactiveEventRepository,
+    SqlAlchemyRelationshipStateRepository,
     SqlAlchemyReminderRepository,
+    SqlAlchemySelfStateRepository,
     SqlAlchemyUserRepository,
 )
 from iya_bot.infrastructure.db.session import create_engine, create_session_factory
-from iya_bot.infrastructure.llm.openai_compatible import (
-    LLMSamplingParams,
-    OpenAICompatibleClient,
-)
+from iya_bot.infrastructure.llm.openai_compatible import LLMSamplingParams, OpenAICompatibleClient
 from iya_bot.infrastructure.scheduler.proactive_jobs import ProactiveJobRunner
 from iya_bot.infrastructure.scheduler.reflection_jobs import ReflectionJobRunner
 from iya_bot.infrastructure.scheduler.reminder_jobs import ReminderJobRunner
@@ -47,8 +51,11 @@ async def main() -> None:
     reminder_due_repo = ReminderDueRepository(session_factory)
     proactive_repo = SqlAlchemyProactiveEventRepository(session_factory)
     proactive_due_repo = ProactiveEventDueRepository(session_factory)
+    self_states = SqlAlchemySelfStateRepository(session_factory)
+    relationships = SqlAlchemyRelationshipStateRepository(session_factory)
+    llm_logs = SqlAlchemyLLMRequestRepository(session_factory) if settings.llm_logging_enabled else None
 
-    llm = OpenAICompatibleClient(
+    llm_base = OpenAICompatibleClient(
         base_url=settings.llm_base_url,
         api_key=settings.llm_api_key.get_secret_value(),
         model=settings.llm_model,
@@ -61,6 +68,27 @@ async def main() -> None:
             max_tokens=settings.llm_max_tokens,
         ),
     )
+    llm = LLMRouter(
+        llm_base,
+        provider=settings.llm_provider_name,
+        model=settings.llm_model,
+        request_logs=llm_logs,
+    )
+
+    mode_router = ModeRouter() if settings.mode_router_enabled else None
+    self_state_service = (
+        SelfStateService(
+            states=self_states,
+            relationships=relationships if settings.relationship_state_enabled else None,
+        )
+        if settings.self_state_enabled
+        else None
+    )
+    memory_control = MemoryControlService(
+        memories=memories,
+        self_states=self_states if settings.self_state_enabled else None,
+        relationships=relationships if settings.relationship_state_enabled else None,
+    )
 
     dialogue = DialogueService(
         users=users,
@@ -71,6 +99,10 @@ async def main() -> None:
         system_prompt_path=settings.system_prompt_path,
         runtime_context_enabled=settings.runtime_context_enabled,
         timezone_name=effective_timezone(settings),
+        mode_router=mode_router,
+        self_state=self_state_service,
+        prompt_token_budget=settings.prompt_token_budget,
+        prompt_builder_v2_enabled=settings.prompt_builder_v2_enabled,
     )
     reminder_service = ReminderService(reminder_repo)
     proactive_service = ProactiveService(
@@ -100,21 +132,15 @@ async def main() -> None:
             reminders=reminder_service,
             proactive=proactive_service if settings.proactive_enabled else None,
             reflection=reflection_service if settings.reflection_enabled else None,
+            memory_control=memory_control,
             session_factory=session_factory,
             settings=settings,
         )
     )
 
     reminder_jobs = ReminderJobRunner(bot=bot, repository=reminder_due_repo)
-    proactive_jobs = ProactiveJobRunner(
-        bot=bot,
-        due_repository=proactive_due_repo,
-        proactive=proactive_service,
-    )
-    reflection_jobs = ReflectionJobRunner(
-        reflection=reflection_service,
-        user_limit=settings.reflection_user_limit,
-    )
+    proactive_jobs = ProactiveJobRunner(bot=bot, due_repository=proactive_due_repo, proactive=proactive_service)
+    reflection_jobs = ReflectionJobRunner(reflection=reflection_service, user_limit=settings.reflection_user_limit)
     scheduler = AsyncIOScheduler(timezone=effective_timezone(settings))
     scheduler.add_job(
         reminder_jobs.send_due_reminders,
@@ -141,7 +167,13 @@ async def main() -> None:
         )
     scheduler.start()
 
-    logger.info("Iya Next Clean starting polling. env=%s version=%s prompt=%s", settings.app_env, settings.app_version, settings.system_prompt_path)
+    logger.info(
+        "Iya starting polling. env=%s version=%s prompt=%s manifest_v2=%s",
+        settings.app_env,
+        settings.app_version,
+        settings.system_prompt_path,
+        settings.prompt_builder_v2_enabled,
+    )
     try:
         await bot.delete_webhook(drop_pending_updates=False)
         await dispatcher.start_polling(bot)

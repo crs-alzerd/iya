@@ -1,13 +1,28 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Sequence
 
-from iya_bot.domain.models import ChatMessage
+from iya_bot.domain.models import (
+    ChatMessage,
+    LLMRequestRecord,
+    MemoryItem,
+    MemorySnapshot,
+    RelationshipState,
+    SelfState,
+)
 
 
 class LLMClient(ABC):
     @abstractmethod
-    async def complete(self, messages: Sequence[ChatMessage]) -> str:
+    async def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        kind: str = "dialogue",
+        telegram_user_id: int | None = None,
+    ) -> str:
         raise NotImplementedError
 
 
@@ -51,6 +66,14 @@ class MemoryRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_memory_items(self, telegram_user_id: int, include_archived: bool = False, limit: int = 50) -> list[MemoryItem]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def archive_memory(self, telegram_user_id: int, memory_id: int) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_conversation_summary(self, telegram_user_id: int) -> str | None:
         raise NotImplementedError
 
@@ -60,6 +83,40 @@ class MemoryRepository(ABC):
 
     @abstractmethod
     async def replace_memories(self, telegram_user_id: int, memories: list[str]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def create_memory_snapshot(self, telegram_user_id: int, reason: str) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_memory_snapshots(self, telegram_user_id: int, limit: int = 10) -> list[MemorySnapshot]:
+        raise NotImplementedError
+
+
+class SelfStateRepository(ABC):
+    @abstractmethod
+    async def get_or_create_state(self, telegram_user_id: int) -> SelfState:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def upsert_state(self, state: SelfState) -> None:
+        raise NotImplementedError
+
+
+class RelationshipStateRepository(ABC):
+    @abstractmethod
+    async def get_or_create_relationship(self, telegram_user_id: int) -> RelationshipState:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def upsert_relationship(self, relationship: RelationshipState) -> None:
+        raise NotImplementedError
+
+
+class LLMRequestRepository(ABC):
+    @abstractmethod
+    async def add_request_record(self, record: LLMRequestRecord) -> None:
         raise NotImplementedError
 
 
@@ -78,6 +135,7 @@ class ProactiveEventRepository(ABC):
         kind: str,
         planned_at: datetime,
         payload: dict[str, object] | None = None,
+        dedup_key: str | None = None,
     ) -> int:
         raise NotImplementedError
 
