@@ -4,7 +4,8 @@ from typing import Sequence
 import pytest
 
 from iya_bot.application.dialogue import DialogueService
-from iya_bot.domain.models import ChatMessage
+from iya_bot.application.tools.base import Tool, ToolContext, ToolRegistry
+from iya_bot.domain.models import ChatMessage, LLMResponse, ToolCall
 
 
 class FakeUserRepository:
@@ -51,9 +52,13 @@ class FakeMemoryRepository:
     def __init__(self, memories: list[str], summary: str | None) -> None:
         self.memories = memories
         self.summary = summary
+        self.extracted_facts: list[str] = []
 
     async def add_memory(self, telegram_user_id: int, content: str) -> None:
         self.memories.append(content)
+
+    async def add_extracted_fact(self, telegram_user_id: int, text: str, **kwargs) -> None:
+        self.extracted_facts.append(text)
 
     async def get_memories(self, telegram_user_id: int, limit: int = 20) -> list[str]:
         return self.memories[-limit:]
@@ -73,7 +78,7 @@ class FakeLLMClient:
         self.responses = responses
         self.calls: list[list[ChatMessage]] = []
 
-    async def complete(self, messages: Sequence[ChatMessage]) -> str:
+    async def complete(self, messages: Sequence[ChatMessage], **kwargs) -> str:
         self.calls.append(list(messages))
         return self.responses.pop(0)
 
@@ -104,13 +109,16 @@ async def test_answer_sends_pinned_memory_and_db_summary_to_llm(tmp_path: Path) 
         text="Что сейчас с памятью?",
     )
 
-    assert response == "Ответ пользователю"
+    assert response.text == "Ответ пользователю"
+    await dialogue.drain_background_tasks()
     assert len(llm.calls) == 2
     first_api_call = llm.calls[0]
     assert first_api_call[0].role == "system"
     assert "Системный промпт" in first_api_call[0].content
-    assert "Пользователь работает над Telegram-ботом Ия." in first_api_call[0].content
-    assert "Ранее обсуждали архитектуру" in first_api_call[0].content
+    # В v2 память и выжимка идут отдельными system-блоками, а не в первом.
+    system_text = "\n".join(str(m.content) for m in first_api_call if m.role == "system")
+    assert "Пользователь работает над Telegram-ботом Ия." in system_text
+    assert "Ранее обсуждали архитектуру" in system_text
     assert first_api_call[-1] == ChatMessage(role="user", content="Что сейчас с памятью?")
     assert messages.messages[-1] == ChatMessage(role="assistant", content="Ответ пользователю")
     assert memories.summary == "Новая краткая выжимка"
@@ -142,13 +150,11 @@ async def test_runtime_context_injected_without_breaking_prompt_order(tmp_path: 
     )
 
     call = llm.calls[0]
-    # Индекс 0 — по-прежнему основной системный промпт.
+    # Индекс 0 — единый системный блок v2 (persona anchor + системный промпт + runtime).
     assert call[0].role == "system"
     assert "Системный промпт" in call[0].content
-    # Есть второй system-блок с анти-повтором.
-    assert any(
-        m.role == "system" and "повтор" in str(m.content).lower() for m in call[1:]
-    )
+    # Runtime-контекст с анти-повтором свёрнут в тот же системный блок.
+    assert "повтор" in str(call[0].content).lower()
     # Последнее сообщение — реплика пользователя.
     assert call[-1] == ChatMessage(role="user", content="привет")
 
@@ -217,9 +223,112 @@ async def test_answer_can_send_current_image_to_llm(tmp_path: Path) -> None:
         image_data_url="data:image/jpeg;base64,abc",
     )
 
-    assert response == "Ответ по картинке"
+    assert response.text == "Ответ по картинке"
     current_user_message = llm.calls[0][-1]
     assert current_user_message.role == "user"
     assert isinstance(current_user_message.content, list)
     assert current_user_message.content[1]["image_url"]["url"] == "data:image/jpeg;base64,abc"
     assert messages.messages[0].content == "Что на фото?\n[Пользователь отправил изображение.]"
+
+
+class FakeToolLLMClient:
+    """LLM, который сначала просит вызвать инструмент, потом отвечает текстом."""
+
+    def __init__(self, tool_responses: list[LLMResponse], complete_responses: list[str]) -> None:
+        self._tool_responses = tool_responses
+        self._complete_responses = complete_responses
+        self.tool_calls_made: list[list[ChatMessage]] = []
+
+    async def complete_tools(self, messages, *, tools, kind="dialogue", telegram_user_id=None) -> LLMResponse:
+        self.tool_calls_made.append(list(messages))
+        return self._tool_responses.pop(0)
+
+    async def complete(self, messages, **kwargs) -> str:
+        return self._complete_responses.pop(0)
+
+
+class RecordingTool(Tool):
+    name = "web_search"
+    description = "test"
+    parameters = {"type": "object", "properties": {"query": {"type": "string"}}}
+
+    def __init__(self) -> None:
+        self.invoked_with: list[dict] = []
+
+    async def run(self, args: dict, ctx: ToolContext) -> str:
+        self.invoked_with.append(args)
+        return "tool result: 42"
+
+
+async def test_tool_loop_calls_tool_then_returns_text(tmp_path: Path) -> None:
+    prompt = tmp_path / "system.md"
+    prompt.write_text("Системный промпт", encoding="utf-8")
+    tool = RecordingTool()
+    llm = FakeToolLLMClient(
+        tool_responses=[
+            LLMResponse(content=None, tool_calls=(ToolCall(id="c1", name="web_search", arguments='{"query":"x"}'),)),
+            LLMResponse(content="Вот ответ с учётом поиска.", tool_calls=()),
+        ],
+        complete_responses=["Выжимка"],
+    )
+    dialogue = DialogueService(
+        users=FakeUserRepository(),
+        messages=FakeMessageRepository(),
+        memories=FakeMemoryRepository(memories=[], summary=None),
+        llm=llm,
+        history_limit=20,
+        system_prompt_path=str(prompt),
+        tools=ToolRegistry([tool]),
+    )
+
+    result = await dialogue.answer(
+        telegram_user_id=7,
+        username=None,
+        first_name=None,
+        last_name=None,
+        text="что нового?",
+    )
+
+    assert result.text == "Вот ответ с учётом поиска."
+    assert tool.invoked_with == [{"query": "x"}]
+    # Второй вызов модели уже видит сообщение с результатом инструмента.
+    second_call = llm.tool_calls_made[1]
+    assert any(m.role == "tool" and "tool result: 42" in str(m.content) for m in second_call)
+
+
+async def test_auto_memory_single_call_updates_summary_and_facts(tmp_path: Path) -> None:
+    prompt = tmp_path / "system.md"
+    prompt.write_text("Системный промпт", encoding="utf-8")
+    messages = FakeMessageRepository()
+    memories = FakeMemoryRepository(memories=[], summary=None)
+    # Один ответ диалога + один консолидирующий JSON-ответ (а не два отдельных).
+    llm = FakeLLMClient(
+        [
+            "Ответ пользователю",
+            '{"summary": "Новая выжимка", "new_facts": ["Пользователь любит зиму"]}',
+        ]
+    )
+    dialogue = DialogueService(
+        users=FakeUserRepository(),
+        messages=messages,
+        memories=memories,
+        llm=llm,
+        history_limit=20,
+        system_prompt_path=str(prompt),
+        auto_memory_enabled=True,
+    )
+
+    result = await dialogue.answer(
+        telegram_user_id=42,
+        username=None,
+        first_name=None,
+        last_name=None,
+        text="люблю зиму",
+    )
+    await dialogue.drain_background_tasks()
+
+    assert result.text == "Ответ пользователю"
+    # Ровно 2 вызова на ход: ответ + консолидация.
+    assert len(llm.calls) == 2
+    assert memories.summary == "Новая выжимка"
+    assert memories.extracted_facts == ["Пользователь любит зиму"]

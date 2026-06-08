@@ -105,14 +105,21 @@ class PromptBuilder:
     def _memory_block(self, *, memory_facts: list[MemoryItem], fallback_memories: list[str]) -> str | None:
         active_facts = [m for m in memory_facts if m.status == "active"]
         if active_facts:
+            # Сортируем по важности, но в промпт отдаём только текст — без id,
+            # source, confidence и salience. Это служебные поля, и манифест требует
+            # не превращать память в отчёт. Ия должна вплетать факты естественно.
             ordered = sorted(active_facts, key=lambda m: (m.salience_score, m.confidence), reverse=True)[:20]
-            lines = [
-                f"- #{m.id} [{m.source}; confidence={m.confidence:.2f}; salience={m.salience_score:.2f}] {m.text}"
-                for m in ordered
-            ]
-            return "Салиентная память. Используй только когда релевантно:\n" + "\n".join(lines)
+            lines = [f"- {m.text}" for m in ordered]
+            return (
+                "Что ты помнишь о пользователе и общих делах. "
+                "Вплетай естественно, когда уместно, не зачитывай списком:\n" + "\n".join(lines)
+            )
         if fallback_memories:
-            return "Закреплённая память. Используй только когда релевантно:\n" + "\n".join(f"- {m}" for m in fallback_memories)
+            return (
+                "Что ты помнишь о пользователе и общих делах. "
+                "Вплетай естественно, когда уместно, не зачитывай списком:\n"
+                + "\n".join(f"- {m}" for m in fallback_memories)
+            )
         return None
 
     def _fit_blocks(self, blocks: list[str], existing_messages: list[ChatMessage]) -> list[str]:

@@ -7,9 +7,11 @@ from typing import Sequence
 from iya_bot.domain.models import (
     ChatMessage,
     LLMRequestRecord,
+    LLMResponse,
     MemoryItem,
     MemorySnapshot,
     RelationshipState,
+    SearchResult,
     SelfState,
 )
 
@@ -23,6 +25,31 @@ class LLMClient(ABC):
         kind: str = "dialogue",
         telegram_user_id: int | None = None,
     ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def complete_tools(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        tools: list[dict],
+        kind: str = "dialogue",
+        telegram_user_id: int | None = None,
+    ) -> LLMResponse:
+        """Один шаг tool-calling: модель либо отвечает текстом, либо просит вызвать инструменты."""
+        raise NotImplementedError
+
+
+class WebSearchClient(ABC):
+    @abstractmethod
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        raise NotImplementedError
+
+
+class PageFetcher(ABC):
+    @abstractmethod
+    async def fetch(self, url: str) -> str:
+        """Скачать страницу и вернуть читабельный текст."""
         raise NotImplementedError
 
 
@@ -59,6 +86,19 @@ class MessageRepository(ABC):
 class MemoryRepository(ABC):
     @abstractmethod
     async def add_memory(self, telegram_user_id: int, content: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add_extracted_fact(
+        self,
+        telegram_user_id: int,
+        text: str,
+        *,
+        author: str = "extracted",
+        source: str = "extracted",
+        confidence: float = 0.7,
+        salience: float = 0.6,
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -117,12 +157,6 @@ class RelationshipStateRepository(ABC):
 class LLMRequestRepository(ABC):
     @abstractmethod
     async def add_request_record(self, record: LLMRequestRecord) -> None:
-        raise NotImplementedError
-
-
-class ReminderRepository(ABC):
-    @abstractmethod
-    async def create_reminder(self, telegram_user_id: int, chat_id: int, text: str, due_at: datetime) -> int:
         raise NotImplementedError
 
 

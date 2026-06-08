@@ -38,6 +38,7 @@ class LLMRequestKind:
     VISION = "vision"
     CODE = "code"
     ROUTER = "router"
+    MEMORY = "memory"
 
 
 class LLMRequestStatus:

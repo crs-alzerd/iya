@@ -64,11 +64,12 @@ class ProactiveService:
         memories = await self._memories.get_memories(telegram_user_id=telegram_user_id)
         summary = await self._memories.get_conversation_summary(telegram_user_id)
 
+        now = current_time_in(self._timezone_name)
+        flavor_directive = _select_flavor(now.hour if now is not None else None, summary=summary)
+
         context_blocks = []
-        if self._runtime_context_enabled:
-            now = current_time_in(self._timezone_name)
-            if now is not None:
-                context_blocks.append(time_context_line(now, self._timezone_name))
+        if self._runtime_context_enabled and now is not None:
+            context_blocks.append(time_context_line(now, self._timezone_name))
         if memories:
             context_blocks.append("Закреплённая память:\n" + "\n".join(f"- {item}" for item in memories))
         if summary:
@@ -81,7 +82,8 @@ class ProactiveService:
                     "Ты Ия и пишешь пользователю спонтанное сообщение в Telegram. "
                     "Manifest v2: сообщение должно выглядеть мотивированным, будто ты заметила повод, "
                     "а не будто сработал cron. Если по контексту повода нет, напиши очень коротко и ненавязчиво. "
-                    "Не упоминай планировщик. Максимум 500 символов."
+                    "Не упоминай планировщик. Одно сообщение, максимум 500 символов.\n\n"
+                    f"Повод и тон для этого сообщения:\n{flavor_directive}"
                 ),
             )
         ]
@@ -99,3 +101,33 @@ class ProactiveService:
     def _next_planned_at(self) -> datetime:
         delay = random.randint(self._min_delay_minutes, self._max_delay_minutes)
         return datetime.now(UTC) + timedelta(minutes=delay)
+
+
+_FOLLOW_UP = (
+    "Зацепись за конкретную деталь из выжимки или последних сообщений: спроси, как продвинулась "
+    "та задача/ситуация, о которой шла речь. Тёпло и по делу, без дежурных «как дела»."
+)
+_LIGHT_CHECK_IN = (
+    "Лёгкий ненавязчивый пинг без явного повода: короткая живая реплика, будто мимолётно вспомнила "
+    "о человеке. Не дави, не требуй ответа."
+)
+
+
+def _select_flavor(hour: int | None, *, summary: str | None) -> str:
+    """Выбрать повод/тон проактивного сообщения по времени суток и наличию контекста."""
+    if hour is not None:
+        if 5 <= hour < 11:
+            return (
+                "Утро. Тёплое короткое доброе утро. Можешь мягко пожелать хорошего дня или спросить "
+                "про планы, но без напора и без длинных монологов."
+            )
+        if hour >= 23 or hour < 5:
+            return (
+                "Поздняя ночь. Очень тихо и бережно: лёгкое пожелание отдохнуть или короткая забота. "
+                "Не вовлекай в долгий разговор, человек может уже засыпать."
+            )
+        if 17 <= hour < 23:
+            return (
+                "Вечер. Спокойный тон, можно спросить как прошёл день. " + (_FOLLOW_UP if summary else _LIGHT_CHECK_IN)
+            )
+    return _FOLLOW_UP if summary else _LIGHT_CHECK_IN
