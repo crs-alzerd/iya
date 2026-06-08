@@ -18,15 +18,14 @@ from iya_bot.application.memory_control import (
 )
 from iya_bot.application.proactive import ProactiveService
 from iya_bot.application.reflection import ReflectionService
-from iya_bot.application.reminders import ReminderParseError, ReminderService
 from iya_bot.config import Settings, effective_timezone, is_owner
+from iya_bot.domain.models import DialogueResult
 
 logger = logging.getLogger(__name__)
 
 
 def build_router(
     dialogue: DialogueService,
-    reminders: ReminderService,
     proactive: ProactiveService | None,
     reflection: ReflectionService | None,
     memory_control: MemoryControlService,
@@ -57,8 +56,7 @@ def build_router(
             "/forget <id> — архивировать факт памяти\n"
             "/memory_backup — snapshot памяти\n"
             "/whoami_to_you — self/relationship диагностика\n"
-            "/reflect — очистить память, только владелец\n"
-            "/remind 10m <текст> — напоминание"
+            "/reflect — очистить память, только владелец"
         )
 
     @router.message(Command("health"))
@@ -104,7 +102,6 @@ def build_router(
             f"LLM_BASE_URL={settings.llm_base_url}\n"
             f"LLM_MODEL={settings.llm_model}\n"
             f"LLM_TIMEOUT_SECONDS={settings.llm_timeout_seconds}\n"
-            f"REMINDER_SCAN_INTERVAL_SECONDS={settings.reminder_scan_interval_seconds}\n"
             f"PROACTIVE_ENABLED={settings.proactive_enabled}\n"
             f"REFLECTION_ENABLED={settings.reflection_enabled}\n"
             f"TELEGRAM_IMAGE_MAX_BYTES={settings.telegram_image_max_bytes}\n"
@@ -116,7 +113,13 @@ def build_router(
             f"MODE_ROUTER_ENABLED={settings.mode_router_enabled}\n"
             f"PROMPT_BUILDER_V2_ENABLED={settings.prompt_builder_v2_enabled}\n"
             f"PROMPT_TOKEN_BUDGET={settings.prompt_token_budget}\n"
-            f"LLM_LOGGING_ENABLED={settings.llm_logging_enabled}"
+            f"LLM_LOGGING_ENABLED={settings.llm_logging_enabled}\n"
+            "Tools / memory:\n"
+            f"TOOLS_ENABLED={settings.tools_enabled}\n"
+            f"WEB_SEARCH_ENABLED={settings.web_search_enabled}\n"
+            f"FETCH_URL_ENABLED={settings.fetch_url_enabled}\n"
+            f"REMEMBER_TOOL_ENABLED={settings.remember_tool_enabled}\n"
+            f"AUTO_MEMORY_ENABLED={settings.auto_memory_enabled}"
         )
 
     @router.message(Command("version"))
@@ -213,31 +216,6 @@ def build_router(
         reflected = await reflection.reflect_user(message.from_user.id)
         await message.answer("Память очищена. Snapshot создан перед изменением." if reflected else "Памяти для очистки пока нет или snapshot не создан.")
 
-    @router.message(Command("remind"))
-    async def remind_handler(message: Message) -> None:
-        if message.from_user is None:
-            return
-        payload = _command_payload(message.text or "", "/remind")
-        if not payload:
-            await message.answer("Формат: /remind 10m текст, /remind 2h текст или /remind 1d текст.")
-            return
-        await dialogue.register_user(
-            telegram_id=message.from_user.id,
-            username=message.from_user.username,
-            first_name=message.from_user.first_name,
-            last_name=message.from_user.last_name,
-        )
-        try:
-            reminder_id = await reminders.create_from_command(
-                telegram_user_id=message.from_user.id,
-                chat_id=message.chat.id,
-                command_payload=payload,
-            )
-        except ReminderParseError as exc:
-            await message.answer(str(exc))
-            return
-        await message.answer(f"Поставила напоминание. id={reminder_id}")
-
     @router.message()
     async def dialogue_handler(message: Message) -> None:
         if message.from_user is None:
@@ -277,11 +255,14 @@ def build_router(
     return router
 
 
-async def _send_humanized(message: Message, answer: str, settings: Settings) -> None:
+async def _send_humanized(message: Message, answer: DialogueResult, settings: Settings) -> None:
     if not settings.humanize_enabled:
-        chunks = split_into_messages(answer, max_chunks=1)
+        max_chunks = 1
     else:
-        chunks = split_into_messages(answer, max_chunks=settings.humanize_max_chunks)
+        # Профиль диалога диктует верхнюю границу (1 — цельный ответ, 2 — болтовня).
+        # Глобальный humanize_max_chunks остаётся жёстким потолком сверху.
+        max_chunks = min(settings.humanize_max_chunks, answer.max_messages)
+    chunks = split_into_messages(answer.text, max_chunks=max(1, max_chunks))
     if not chunks:
         return
     for index, chunk in enumerate(chunks):

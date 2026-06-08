@@ -12,7 +12,6 @@ from iya_bot.application.ports import (
     MessageRepository,
     ProactiveEventRepository,
     RelationshipStateRepository,
-    ReminderRepository,
     SelfStateRepository,
     UserRepository,
 )
@@ -33,7 +32,6 @@ from iya_bot.infrastructure.db.models import (
     PinnedMemoryORM,
     ProactiveEventORM,
     RelationshipStateORM,
-    ReminderORM,
     SelfStateORM,
     TelegramUserORM,
 )
@@ -139,6 +137,34 @@ class SqlAlchemyMemoryRepository(MemoryRepository):
                     source="manual",
                     confidence=1.0,
                     salience_score=1.0,
+                    status="active",
+                    last_confirmed_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+
+    async def add_extracted_fact(
+        self,
+        telegram_user_id: int,
+        text: str,
+        *,
+        author: str = "extracted",
+        source: str = "extracted",
+        confidence: float = 0.7,
+        salience: float = 0.6,
+    ) -> None:
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        async with self._session_factory() as session:
+            session.add(
+                MemoryFactORM(
+                    telegram_user_id=telegram_user_id,
+                    text=cleaned,
+                    author=author,
+                    source=source,
+                    confidence=confidence,
+                    salience_score=salience,
                     status="active",
                     last_confirmed_at=datetime.now(UTC),
                 )
@@ -391,49 +417,6 @@ class SqlAlchemyLLMRequestRepository(LLMRequestRepository):
                     error_text=record.error_text,
                 )
             )
-            await session.commit()
-
-
-class SqlAlchemyReminderRepository(ReminderRepository):
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self._session_factory = session_factory
-
-    async def create_reminder(self, telegram_user_id: int, chat_id: int, text: str, due_at: datetime) -> int:
-        async with self._session_factory() as session:
-            reminder = ReminderORM(telegram_user_id=telegram_user_id, chat_id=chat_id, text=text, due_at=due_at, status="pending")
-            session.add(reminder)
-            await session.commit()
-            await session.refresh(reminder)
-            return int(reminder.id)
-
-
-class ReminderDueRepository:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self._session_factory = session_factory
-
-    async def get_due_pending(self, limit: int = 20) -> list[ReminderORM]:
-        now = datetime.now(UTC)
-        stmt = (
-            select(ReminderORM)
-            .where(ReminderORM.status == "pending")
-            .where(ReminderORM.due_at <= now)
-            .order_by(ReminderORM.due_at.asc(), ReminderORM.id.asc())
-            .limit(limit)
-        )
-        async with self._session_factory() as session:
-            result = await session.execute(stmt)
-            return list(result.scalars().all())
-
-    async def mark_sent(self, reminder_id: int) -> None:
-        stmt = update(ReminderORM).where(ReminderORM.id == reminder_id).values(status="sent", sent_at=datetime.now(UTC))
-        async with self._session_factory() as session:
-            await session.execute(stmt)
-            await session.commit()
-
-    async def mark_failed(self, reminder_id: int) -> None:
-        stmt = update(ReminderORM).where(ReminderORM.id == reminder_id).values(status="failed")
-        async with self._session_factory() as session:
-            await session.execute(stmt)
             await session.commit()
 
 

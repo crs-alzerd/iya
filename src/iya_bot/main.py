@@ -10,26 +10,27 @@ from iya_bot.application.memory_control import MemoryControlService
 from iya_bot.application.mode_router import ModeRouter
 from iya_bot.application.proactive import ProactiveService
 from iya_bot.application.reflection import ReflectionService
-from iya_bot.application.reminders import ReminderService
 from iya_bot.application.self_state import SelfStateService
+from iya_bot.application.tools import ToolRegistry
+from iya_bot.application.tools.memory import RememberFactTool
+from iya_bot.application.tools.web import FetchUrlTool, WebSearchTool
 from iya_bot.config import effective_timezone, get_settings
 from iya_bot.infrastructure.db.repositories import (
     ProactiveEventDueRepository,
-    ReminderDueRepository,
     SqlAlchemyLLMRequestRepository,
     SqlAlchemyMemoryRepository,
     SqlAlchemyMessageRepository,
     SqlAlchemyProactiveEventRepository,
     SqlAlchemyRelationshipStateRepository,
-    SqlAlchemyReminderRepository,
     SqlAlchemySelfStateRepository,
     SqlAlchemyUserRepository,
 )
 from iya_bot.infrastructure.db.session import create_engine, create_session_factory
 from iya_bot.infrastructure.llm.openai_compatible import LLMSamplingParams, OpenAICompatibleClient
+from iya_bot.infrastructure.search.duckduckgo import DuckDuckGoSearchClient
+from iya_bot.infrastructure.search.http_fetcher import HttpPageFetcher
 from iya_bot.infrastructure.scheduler.proactive_jobs import ProactiveJobRunner
 from iya_bot.infrastructure.scheduler.reflection_jobs import ReflectionJobRunner
-from iya_bot.infrastructure.scheduler.reminder_jobs import ReminderJobRunner
 from iya_bot.infrastructure.telegram.handlers import build_router
 
 
@@ -47,8 +48,6 @@ async def main() -> None:
     users = SqlAlchemyUserRepository(session_factory)
     messages = SqlAlchemyMessageRepository(session_factory)
     memories = SqlAlchemyMemoryRepository(session_factory)
-    reminder_repo = SqlAlchemyReminderRepository(session_factory)
-    reminder_due_repo = ReminderDueRepository(session_factory)
     proactive_repo = SqlAlchemyProactiveEventRepository(session_factory)
     proactive_due_repo = ProactiveEventDueRepository(session_factory)
     self_states = SqlAlchemySelfStateRepository(session_factory)
@@ -90,6 +89,28 @@ async def main() -> None:
         relationships=relationships if settings.relationship_state_enabled else None,
     )
 
+    tools: ToolRegistry | None = None
+    if settings.tools_enabled:
+        tool_list = []
+        if settings.web_search_enabled:
+            tool_list.append(
+                WebSearchTool(
+                    DuckDuckGoSearchClient(timeout_seconds=settings.web_search_timeout_seconds),
+                    max_results=settings.web_search_max_results,
+                )
+            )
+        if settings.fetch_url_enabled:
+            tool_list.append(
+                FetchUrlTool(
+                    HttpPageFetcher(timeout_seconds=settings.fetch_url_timeout_seconds),
+                    max_chars=settings.fetch_url_max_chars,
+                )
+            )
+        if settings.remember_tool_enabled:
+            tool_list.append(RememberFactTool(memories))
+        if tool_list:
+            tools = ToolRegistry(tool_list)
+
     dialogue = DialogueService(
         users=users,
         messages=messages,
@@ -103,8 +124,11 @@ async def main() -> None:
         self_state=self_state_service,
         prompt_token_budget=settings.prompt_token_budget,
         prompt_builder_v2_enabled=settings.prompt_builder_v2_enabled,
+        tools=tools,
+        tool_max_iterations=settings.tool_max_iterations,
+        auto_memory_enabled=settings.auto_memory_enabled,
+        auto_memory_max_facts=settings.auto_memory_max_facts,
     )
-    reminder_service = ReminderService(reminder_repo)
     proactive_service = ProactiveService(
         events=proactive_repo,
         messages=messages,
@@ -129,7 +153,6 @@ async def main() -> None:
     dispatcher.include_router(
         build_router(
             dialogue=dialogue,
-            reminders=reminder_service,
             proactive=proactive_service if settings.proactive_enabled else None,
             reflection=reflection_service if settings.reflection_enabled else None,
             memory_control=memory_control,
@@ -138,17 +161,9 @@ async def main() -> None:
         )
     )
 
-    reminder_jobs = ReminderJobRunner(bot=bot, repository=reminder_due_repo)
     proactive_jobs = ProactiveJobRunner(bot=bot, due_repository=proactive_due_repo, proactive=proactive_service)
     reflection_jobs = ReflectionJobRunner(reflection=reflection_service, user_limit=settings.reflection_user_limit)
     scheduler = AsyncIOScheduler(timezone=effective_timezone(settings))
-    scheduler.add_job(
-        reminder_jobs.send_due_reminders,
-        "interval",
-        seconds=settings.reminder_scan_interval_seconds,
-        max_instances=1,
-        coalesce=True,
-    )
     if settings.proactive_enabled:
         scheduler.add_job(
             proactive_jobs.send_due_events,

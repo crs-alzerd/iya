@@ -9,17 +9,50 @@ ChatContent = str | list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
-class ChatMessage:
-    role: str
-    content: ChatContent
+class ToolCall:
+    """Один вызов инструмента, который запросила модель (OpenAI function calling)."""
+
+    id: str
+    name: str
+    arguments: str  # сырой JSON-строкой, как его вернул провайдер
 
 
 @dataclass(frozen=True)
-class ReminderDraft:
-    chat_id: int
-    telegram_user_id: int
+class ChatMessage:
+    role: str
+    content: ChatContent | None = None
+    # Для assistant-сообщения, в котором модель попросила вызвать инструменты.
+    tool_calls: tuple[ToolCall, ...] | None = None
+    # Для сообщения с результатом инструмента (role="tool").
+    tool_call_id: str | None = None
+    name: str | None = None
+
+
+@dataclass(frozen=True)
+class LLMResponse:
+    """Ответ модели в режиме tool-calling: либо текст, либо запросы инструментов."""
+
+    content: str | None
+    tool_calls: tuple[ToolCall, ...] = ()
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    title: str
+    url: str
+    snippet: str
+
+
+@dataclass(frozen=True)
+class DialogueResult:
+    """Ответ диалога вместе с подсказкой, сколько сообщений уместно отправить.
+
+    max_messages=1 означает одно цельное сообщение (РП, поддержка, кризис,
+    технический разбор). Для лёгкой бытовой переписки допускается больше.
+    """
+
     text: str
-    due_at: datetime
+    max_messages: int = 1
 
 
 @dataclass(frozen=True)

@@ -32,13 +32,12 @@ class Settings(BaseSettings):
     system_prompt_path: str = Field(default="/app/prompts/iya_system.md", alias="SYSTEM_PROMPT_PATH")
 
     humanize_enabled: bool = Field(default=True, alias="HUMANIZE_ENABLED")
-    humanize_max_chunks: int = Field(default=3, alias="HUMANIZE_MAX_CHUNKS")
+    humanize_max_chunks: int = Field(default=2, alias="HUMANIZE_MAX_CHUNKS")
     humanize_ms_per_char: int = Field(default=22, alias="HUMANIZE_MS_PER_CHAR")
     humanize_min_delay_seconds: float = Field(default=0.6, alias="HUMANIZE_MIN_DELAY_SECONDS")
     humanize_max_delay_seconds: float = Field(default=4.0, alias="HUMANIZE_MAX_DELAY_SECONDS")
 
     runtime_context_enabled: bool = Field(default=True, alias="RUNTIME_CONTEXT_ENABLED")
-    reminder_scan_interval_seconds: int = Field(default=10, alias="REMINDER_SCAN_INTERVAL_SECONDS")
     proactive_enabled: bool = Field(default=True, alias="PROACTIVE_ENABLED")
     proactive_scan_interval_seconds: int = Field(default=60, alias="PROACTIVE_SCAN_INTERVAL_SECONDS")
     proactive_min_delay_minutes: int = Field(default=180, alias="PROACTIVE_MIN_DELAY_MINUTES")
@@ -59,6 +58,21 @@ class Settings(BaseSettings):
     llm_logging_enabled: bool = Field(default=True, alias="LLM_LOGGING_ENABLED")
     motivated_proactive_enabled: bool = Field(default=False, alias="MOTIVATED_PROACTIVE_ENABLED")
     prompt_token_budget: int = Field(default=12_000, alias="PROMPT_TOKEN_BUDGET")
+
+    # Tool-calling (function calling). Инструменты, которые Ия может вызывать сама.
+    tools_enabled: bool = Field(default=True, alias="TOOLS_ENABLED")
+    tool_max_iterations: int = Field(default=4, alias="TOOL_MAX_ITERATIONS")
+    web_search_enabled: bool = Field(default=True, alias="WEB_SEARCH_ENABLED")
+    web_search_max_results: int = Field(default=5, alias="WEB_SEARCH_MAX_RESULTS")
+    web_search_timeout_seconds: int = Field(default=15, alias="WEB_SEARCH_TIMEOUT_SECONDS")
+    fetch_url_enabled: bool = Field(default=True, alias="FETCH_URL_ENABLED")
+    fetch_url_max_chars: int = Field(default=4000, alias="FETCH_URL_MAX_CHARS")
+    fetch_url_timeout_seconds: int = Field(default=15, alias="FETCH_URL_TIMEOUT_SECONDS")
+    remember_tool_enabled: bool = Field(default=True, alias="REMEMBER_TOOL_ENABLED")
+
+    # Пассивное авто-запоминание фактов из диалога.
+    auto_memory_enabled: bool = Field(default=True, alias="AUTO_MEMORY_ENABLED")
+    auto_memory_max_facts: int = Field(default=5, alias="AUTO_MEMORY_MAX_FACTS")
 
     @field_validator("owner_telegram_id", mode="before")
     @classmethod

@@ -25,6 +25,7 @@ class FakeMemoryRepository:
     def __init__(self, memories: list[str], summary: str | None) -> None:
         self.memories = memories
         self.summary = summary
+        self.snapshots: list[tuple[int, str]] = []
 
     async def add_memory(self, telegram_user_id: int, content: str) -> None:
         self.memories.append(content)
@@ -40,6 +41,10 @@ class FakeMemoryRepository:
 
     async def replace_memories(self, telegram_user_id: int, memories: list[str]) -> None:
         self.memories = memories
+
+    async def create_memory_snapshot(self, telegram_user_id: int, reason: str) -> int:
+        self.snapshots.append((telegram_user_id, reason))
+        return len(self.snapshots)
 
 
 class FakeMessageRepository:
@@ -62,7 +67,7 @@ class FakeLLMClient:
         self.response = response
         self.calls: list[list[ChatMessage]] = []
 
-    async def complete(self, messages: Sequence[ChatMessage]) -> str:
+    async def complete(self, messages: Sequence[ChatMessage], **kwargs) -> str:
         self.calls.append(list(messages))
         return self.response
 

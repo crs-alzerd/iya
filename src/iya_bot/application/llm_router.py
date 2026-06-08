@@ -5,7 +5,7 @@ from typing import Sequence
 
 from iya_bot.application.ports import LLMClient, LLMRequestRepository
 from iya_bot.domain.enums import LLMRequestStatus
-from iya_bot.domain.models import ChatMessage, LLMRequestRecord
+from iya_bot.domain.models import ChatMessage, LLMRequestRecord, LLMResponse
 
 
 class LLMRouter(LLMClient):
@@ -38,6 +38,37 @@ class LLMRouter(LLMClient):
         started = time.perf_counter()
         try:
             response = await self._client.complete(messages, kind=kind, telegram_user_id=telegram_user_id)
+        except Exception as exc:
+            await self._record(
+                telegram_user_id=telegram_user_id,
+                kind=kind,
+                status=LLMRequestStatus.FAILED,
+                latency_ms=_elapsed_ms(started),
+                error_text=str(exc)[:2000],
+            )
+            raise
+
+        await self._record(
+            telegram_user_id=telegram_user_id,
+            kind=kind,
+            status=LLMRequestStatus.SUCCESS,
+            latency_ms=_elapsed_ms(started),
+        )
+        return response
+
+    async def complete_tools(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        tools: list[dict],
+        kind: str = "dialogue",
+        telegram_user_id: int | None = None,
+    ) -> LLMResponse:
+        started = time.perf_counter()
+        try:
+            response = await self._client.complete_tools(
+                messages, tools=tools, kind=kind, telegram_user_id=telegram_user_id
+            )
         except Exception as exc:
             await self._record(
                 telegram_user_id=telegram_user_id,
