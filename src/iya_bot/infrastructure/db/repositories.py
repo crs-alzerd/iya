@@ -37,6 +37,22 @@ from iya_bot.infrastructure.db.models import (
 )
 
 
+def _to_memory_item(row: MemoryFactORM) -> MemoryItem:
+    return MemoryItem(
+        id=int(row.id),
+        text=row.text,
+        author=row.author,
+        source=row.source,
+        confidence=float(row.confidence),
+        salience_score=float(row.salience_score),
+        status=row.status,
+        created_at=row.created_at,
+        last_confirmed_at=row.last_confirmed_at,
+        superseded_by=row.superseded_by,
+        embedding=list(row.embedding) if row.embedding else None,
+    )
+
+
 class SqlAlchemyUserRepository(UserRepository):
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -196,21 +212,32 @@ class SqlAlchemyMemoryRepository(MemoryRepository):
         async with self._session_factory() as session:
             result = await session.execute(stmt)
             rows = list(result.scalars().all())
-        return [
-            MemoryItem(
-                id=int(row.id),
-                text=row.text,
-                author=row.author,
-                source=row.source,
-                confidence=float(row.confidence),
-                salience_score=float(row.salience_score),
-                status=row.status,
-                created_at=row.created_at,
-                last_confirmed_at=row.last_confirmed_at,
-                superseded_by=row.superseded_by,
-            )
-            for row in rows
-        ]
+        return [_to_memory_item(row) for row in rows]
+
+    async def list_facts_missing_embedding(self, telegram_user_id: int, limit: int = 20) -> list[MemoryItem]:
+        stmt = (
+            select(MemoryFactORM)
+            .where(MemoryFactORM.telegram_user_id == telegram_user_id)
+            .where(MemoryFactORM.status == "active")
+            .where(MemoryFactORM.embedding.is_(None))
+            .order_by(MemoryFactORM.created_at.desc(), MemoryFactORM.id.desc())
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        return [_to_memory_item(row) for row in rows]
+
+    async def set_fact_embedding(self, telegram_user_id: int, memory_id: int, embedding: list[float]) -> None:
+        stmt = (
+            update(MemoryFactORM)
+            .where(MemoryFactORM.telegram_user_id == telegram_user_id)
+            .where(MemoryFactORM.id == memory_id)
+            .values(embedding=embedding, updated_at=datetime.now(UTC))
+        )
+        async with self._session_factory() as session:
+            await session.execute(stmt)
+            await session.commit()
 
     async def archive_memory(self, telegram_user_id: int, memory_id: int) -> bool:
         stmt = (

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, AsyncIterator, Sequence
 
 import httpx
 
@@ -32,6 +33,12 @@ class OpenAICompatibleClient(LLMClient):
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._sampling = sampling or LLMSamplingParams()
+        # Один клиент на всё время жизни: соединение и TLS-handshake переиспользуются
+        # между вызовами (диалог + tool-loop + фоновые консолидации памяти).
+        self._client = httpx.AsyncClient(timeout=timeout_seconds)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     async def complete(
         self,
@@ -76,6 +83,27 @@ class OpenAICompatibleClient(LLMClient):
             raise RuntimeError("LLM returned neither content nor tool calls.")
         return LLMResponse(content=content, tool_calls=tool_calls)
 
+    async def complete_stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        kind: str = "dialogue",
+        telegram_user_id: int | None = None,
+    ) -> AsyncIterator[str]:
+        payload = self._base_payload(messages)
+        payload["stream"] = True
+        url = f"{self._base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        async with self._client.stream("POST", url, json=payload, headers=headers) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                delta = extract_stream_delta(line)
+                if delta:
+                    yield delta
+
     def _base_payload(self, messages: Sequence[ChatMessage]) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._model,
@@ -98,10 +126,29 @@ class OpenAICompatibleClient(LLMClient):
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
+def extract_stream_delta(line: str) -> str | None:
+    """Достать дельту текста из одной SSE-строки `data: {...}`. Вынесено для юнит-тестов."""
+    line = line.strip()
+    if not line.startswith("data:"):
+        return None
+    data = line[5:].strip()
+    if not data or data == "[DONE]":
+        return None
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    try:
+        delta = parsed["choices"][0].get("delta") or {}
+    except (KeyError, IndexError, TypeError):
+        return None
+    content = delta.get("content")
+    return content if isinstance(content, str) and content else None
 
 
 def _serialize_message(message: ChatMessage) -> dict[str, Any]:

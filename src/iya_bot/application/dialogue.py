@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Awaitable, Callable
 
 from iya_bot.application.memory_consolidation import (
     build_consolidation_messages,
@@ -9,6 +10,7 @@ from iya_bot.application.memory_consolidation import (
     normalize,
     parse_consolidation,
 )
+from iya_bot.application.memory_retrieval import MemoryRetrievalService
 from iya_bot.application.mode_router import ModeRouter
 from iya_bot.application.ports import LLMClient, MemoryRepository, MessageRepository, UserRepository
 from iya_bot.application.prompt_builder import PromptBuilder
@@ -20,6 +22,19 @@ from iya_bot.domain.enums import LLMRequestKind, RouteProfile
 from iya_bot.domain.models import ChatMessage, DialogueResult, MemoryItem, RoutingDecision
 
 logger = logging.getLogger(__name__)
+
+# Колбэк прогресса стриминга: получает накопленный текст ответа целиком.
+ProgressCallback = Callable[[str], Awaitable[None]]
+
+
+class _UserLock:
+    """asyncio.Lock + счётчик пользователей лока, чтобы безопасно чистить словарь."""
+
+    __slots__ = ("lock", "refs")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.refs = 0
 
 # Профили, в которых ответ должен быть одним цельным сообщением. Всё личное,
 # атмосферное, кризисное и техническое не дробится. Дробить можно только лёгкую
@@ -60,6 +75,7 @@ class DialogueService:
         tool_max_iterations: int = 4,
         auto_memory_enabled: bool = False,
         auto_memory_max_facts: int = 5,
+        memory_retrieval: MemoryRetrievalService | None = None,
     ) -> None:
         self._users = users
         self._messages = messages
@@ -76,6 +92,7 @@ class DialogueService:
         self._tool_max_iterations = max(1, tool_max_iterations)
         self._auto_memory_enabled = auto_memory_enabled
         self._auto_memory_max_facts = auto_memory_max_facts
+        self._memory_retrieval = memory_retrieval
         self._prompt_builder = PromptBuilder(
             self._system_prompt,
             timezone_name=timezone_name,
@@ -83,6 +100,9 @@ class DialogueService:
             runtime_context_enabled=runtime_context_enabled,
         )
         self._background_tasks: set[asyncio.Task[None]] = set()
+        # Параллельные сообщения одного пользователя сериализуем: иначе два хода
+        # читают одну историю/выжимку и пишут ответы вперемешку.
+        self._user_locks: dict[int, _UserLock] = {}
 
     async def register_user(
         self,
@@ -112,6 +132,40 @@ class DialogueService:
         last_name: str | None,
         text: str,
         image_data_url: str | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> DialogueResult:
+        # Refcount нужен, чтобы убрать лок из словаря только когда никто не ждёт:
+        # простой "if not locked" гоняется с ожидающим, который ещё не проснулся.
+        entry = self._user_locks.get(telegram_user_id)
+        if entry is None:
+            entry = _UserLock()
+            self._user_locks[telegram_user_id] = entry
+        entry.refs += 1
+        try:
+            async with entry.lock:
+                return await self._answer_locked(
+                    telegram_user_id=telegram_user_id,
+                    username=username,
+                    first_name=first_name,
+                    last_name=last_name,
+                    text=text,
+                    image_data_url=image_data_url,
+                    progress=progress,
+                )
+        finally:
+            entry.refs -= 1
+            if entry.refs == 0 and self._user_locks.get(telegram_user_id) is entry:
+                del self._user_locks[telegram_user_id]
+
+    async def _answer_locked(
+        self,
+        telegram_user_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+        text: str,
+        image_data_url: str | None = None,
+        progress: ProgressCallback | None = None,
     ) -> DialogueResult:
         await self.register_user(
             telegram_id=telegram_user_id,
@@ -142,6 +196,8 @@ class DialogueService:
         # Память грузим один раз. Салиентные факты — основной источник; на legacy
         # pinned-память откатываемся, только если фактов нет (или v2 выключен).
         memory_facts = await self._safe_memory_facts(telegram_user_id)
+        if self._memory_retrieval is not None and memory_facts:
+            memory_facts = await self._memory_retrieval.select_relevant(text, memory_facts)
         if memory_facts and self._prompt_builder_v2_enabled:
             memories: list[str] = []
         else:
@@ -167,6 +223,7 @@ class DialogueService:
             prompt_messages=prompt_messages,
             has_image=image_data_url is not None,
             telegram_user_id=telegram_user_id,
+            progress=progress,
         )
 
         await self._messages.add_message(telegram_user_id, "assistant", response)
@@ -180,7 +237,7 @@ class DialogueService:
         # Он обновляет выжимку и (если включена авто-память) тем же запросом извлекает
         # новые факты, чтобы не плодить два round-trip'а с одинаковым контекстом.
         self._spawn(
-            self._consolidate_memory(
+            self._consolidate_and_backfill(
                 telegram_user_id=telegram_user_id,
                 previous_summary=summary,
                 memory_facts=memory_facts,
@@ -196,12 +253,39 @@ class DialogueService:
         prompt_messages: list[ChatMessage],
         has_image: bool,
         telegram_user_id: int,
+        progress: ProgressCallback | None = None,
     ) -> str:
         # Vision-запросы и режим без инструментов идут прямым одиночным вызовом.
         if has_image or not self._tools:
             kind = LLMRequestKind.VISION if has_image else LLMRequestKind.DIALOGUE
+            if progress is not None and not has_image:
+                streamed = await self._stream_with_progress(
+                    prompt_messages, telegram_user_id=telegram_user_id, progress=progress
+                )
+                if streamed:
+                    return streamed
             return await self._llm.complete(prompt_messages, kind=kind, telegram_user_id=telegram_user_id)
         return await self._run_tool_loop(prompt_messages, telegram_user_id=telegram_user_id)
+
+    async def _stream_with_progress(
+        self,
+        prompt_messages: list[ChatMessage],
+        *,
+        telegram_user_id: int,
+        progress: ProgressCallback,
+    ) -> str | None:
+        """Стримим ответ и сообщаем прогресс. Пустой поток или сбой колбэка не роняют ход."""
+        parts: list[str] = []
+        async for delta in self._llm.complete_stream(
+            prompt_messages, kind=LLMRequestKind.DIALOGUE, telegram_user_id=telegram_user_id
+        ):
+            parts.append(delta)
+            try:
+                await progress("".join(parts))
+            except Exception:
+                logger.debug("Streaming progress callback failed", exc_info=True)
+        text = "".join(parts).strip()
+        return text or None
 
     async def _run_tool_loop(self, prompt_messages: list[ChatMessage], *, telegram_user_id: int) -> str:
         assert self._tools is not None
@@ -246,8 +330,11 @@ class DialogueService:
             await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
 
     async def _safe_memory_facts(self, telegram_user_id: int) -> list[MemoryItem]:
+        # С семантическим поиском берём широкий пул и ранжируем по релевантности;
+        # без него — узкий, отсортированный по salience.
+        limit = 200 if self._memory_retrieval is not None else 50
         try:
-            return await self._memories.list_memory_items(telegram_user_id, include_archived=False, limit=50)
+            return await self._memories.list_memory_items(telegram_user_id, include_archived=False, limit=limit)
         except Exception:
             logger.debug("Failed to load memory_facts; falling back to pinned memories", exc_info=True)
             return []
@@ -322,6 +409,31 @@ class DialogueService:
         now = current_time_in(self._timezone_name)
         content = build_runtime_context(now=now, timezone_name=self._timezone_name, include_time=now is not None)
         return ChatMessage(role="system", content=content)
+
+    async def _consolidate_and_backfill(
+        self,
+        telegram_user_id: int,
+        previous_summary: str | None,
+        memory_facts: list[MemoryItem],
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        try:
+            await self._consolidate_memory(
+                telegram_user_id=telegram_user_id,
+                previous_summary=previous_summary,
+                memory_facts=memory_facts,
+                user_text=user_text,
+                assistant_text=assistant_text,
+            )
+        finally:
+            # Эмбеддинги добиваем после консолидации: накрывает и свежеизвлечённые
+            # факты, и закреплённые вручную через /remember или remember_fact.
+            if self._memory_retrieval is not None:
+                try:
+                    await self._memory_retrieval.backfill(telegram_user_id)
+                except Exception:
+                    logger.exception("Embedding backfill failed for telegram_user_id=%s", telegram_user_id)
 
     async def _consolidate_memory(
         self,

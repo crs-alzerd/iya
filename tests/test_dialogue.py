@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Sequence
 
@@ -332,3 +333,46 @@ async def test_auto_memory_single_call_updates_summary_and_facts(tmp_path: Path)
     assert len(llm.calls) == 2
     assert memories.summary == "Новая выжимка"
     assert memories.extracted_facts == ["Пользователь любит зиму"]
+
+
+class SlowLLMClient:
+    """LLM с задержкой, отвечает по типу запроса — для проверки сериализации параллельных ходов."""
+
+    def __init__(self) -> None:
+        self.dialogue_count = 0
+
+    async def complete(self, messages: Sequence[ChatMessage], *, kind: str = "dialogue", **kwargs) -> str:
+        await asyncio.sleep(0.01)
+        if kind == "dialogue":
+            self.dialogue_count += 1
+            return f"Ответ {self.dialogue_count}"
+        return "Выжимка"
+
+
+async def test_concurrent_answers_from_same_user_are_serialized(tmp_path: Path) -> None:
+    prompt = tmp_path / "system.md"
+    prompt.write_text("Системный промпт", encoding="utf-8")
+    messages = FakeMessageRepository()
+    llm = SlowLLMClient()
+    dialogue = DialogueService(
+        users=FakeUserRepository(),
+        messages=messages,
+        memories=FakeMemoryRepository(memories=[], summary=None),
+        llm=llm,
+        history_limit=20,
+        system_prompt_path=str(prompt),
+    )
+
+    async def ask(text: str):
+        return await dialogue.answer(
+            telegram_user_id=42, username=None, first_name=None, last_name=None, text=text
+        )
+
+    first, second = await asyncio.gather(ask("вопрос 1"), ask("вопрос 2"))
+    await dialogue.drain_background_tasks()
+
+    assert first.text == "Ответ 1"
+    assert second.text == "Ответ 2"
+    # Ходы не перемешаны: user/assistant строго парами.
+    roles = [m.role for m in messages.messages]
+    assert roles == ["user", "assistant", "user", "assistant"]

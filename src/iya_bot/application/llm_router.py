@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Sequence
+from typing import AsyncIterator, Sequence
 
 from iya_bot.application.ports import LLMClient, LLMRequestRepository
 from iya_bot.domain.enums import LLMRequestStatus
@@ -86,6 +86,35 @@ class LLMRouter(LLMClient):
             latency_ms=_elapsed_ms(started),
         )
         return response
+
+    async def complete_stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        kind: str = "dialogue",
+        telegram_user_id: int | None = None,
+    ) -> AsyncIterator[str]:
+        started = time.perf_counter()
+        try:
+            async for delta in self._client.complete_stream(
+                messages, kind=kind, telegram_user_id=telegram_user_id
+            ):
+                yield delta
+        except Exception as exc:
+            await self._record(
+                telegram_user_id=telegram_user_id,
+                kind=kind,
+                status=LLMRequestStatus.FAILED,
+                latency_ms=_elapsed_ms(started),
+                error_text=str(exc)[:2000],
+            )
+            raise
+        await self._record(
+            telegram_user_id=telegram_user_id,
+            kind=kind,
+            status=LLMRequestStatus.SUCCESS,
+            latency_ms=_elapsed_ms(started),
+        )
 
     async def _record(
         self,
