@@ -67,6 +67,8 @@ class MemoryItem:
     created_at: datetime | None = None
     last_confirmed_at: datetime | None = None
     superseded_by: int | None = None
+    # Эмбеддинг для семантического поиска; None — ещё не посчитан.
+    embedding: list[float] | None = None
 
 
 @dataclass(frozen=True)

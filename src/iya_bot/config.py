@@ -22,8 +22,11 @@ class Settings(BaseSettings):
     llm_max_tokens: int | None = Field(default=None, alias="LLM_MAX_TOKENS")
 
     owner_telegram_id: int | None = Field(default=None, alias="OWNER_TELEGRAM_ID")
+    # Приватный режим: список telegram id через запятую. Пусто — бот открыт всем.
+    # Владелец имеет доступ всегда, даже если его нет в списке.
+    allowed_telegram_ids: str = Field(default="", alias="ALLOWED_TELEGRAM_IDS")
     app_env: str = Field(default="production", alias="APP_ENV")
-    app_version: str = Field(default="0.3.0-manifest-v2", alias="APP_VERSION")
+    app_version: str = Field(default="0.4.0-manifest-v2", alias="APP_VERSION")
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     timezone: str = Field(default="Europe/Moscow", alias="TZ")
@@ -74,6 +77,32 @@ class Settings(BaseSettings):
     auto_memory_enabled: bool = Field(default=True, alias="AUTO_MEMORY_ENABLED")
     auto_memory_max_facts: int = Field(default=5, alias="AUTO_MEMORY_MAX_FACTS")
 
+    # Rate limiting: не больше N сообщений в окно на пользователя. Владелец не ограничен.
+    rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
+    rate_limit_messages: int = Field(default=20, alias="RATE_LIMIT_MESSAGES")
+    rate_limit_window_seconds: int = Field(default=60, alias="RATE_LIMIT_WINDOW_SECONDS")
+
+    # Голосовые сообщения через Whisper-совместимый endpoint (/audio/transcriptions).
+    # Пустые base_url/api_key/model — наследуются от основного LLM-подключения.
+    voice_enabled: bool = Field(default=False, alias="VOICE_ENABLED")
+    whisper_base_url: str | None = Field(default=None, alias="WHISPER_BASE_URL")
+    whisper_api_key: SecretStr | None = Field(default=None, alias="WHISPER_API_KEY")
+    whisper_model: str = Field(default="whisper-1", alias="WHISPER_MODEL")
+    telegram_voice_max_bytes: int = Field(default=10_000_000, alias="TELEGRAM_VOICE_MAX_BYTES")
+
+    # Streaming: ответ редактируется в одном Telegram-сообщении по мере генерации.
+    # Работает только на прямом текстовом пути (без tool-loop и vision).
+    streaming_enabled: bool = Field(default=False, alias="STREAMING_ENABLED")
+    streaming_edit_interval_seconds: float = Field(default=1.5, alias="STREAMING_EDIT_INTERVAL_SECONDS")
+
+    # Семантический поиск по памяти: эмбеддинги фактов + косинусное ранжирование.
+    # Эмбеддинги хранятся в JSON-колонке, ранжирование в Python — pgvector не нужен.
+    memory_embeddings_enabled: bool = Field(default=False, alias="MEMORY_EMBEDDINGS_ENABLED")
+    embeddings_base_url: str | None = Field(default=None, alias="EMBEDDINGS_BASE_URL")
+    embeddings_api_key: SecretStr | None = Field(default=None, alias="EMBEDDINGS_API_KEY")
+    embeddings_model: str = Field(default="text-embedding-3-small", alias="EMBEDDINGS_MODEL")
+    memory_retrieval_top_k: int = Field(default=20, alias="MEMORY_RETRIEVAL_TOP_K")
+
     @field_validator("owner_telegram_id", mode="before")
     @classmethod
     def _empty_owner_to_none(cls, value: object) -> object:
@@ -85,6 +114,10 @@ class Settings(BaseSettings):
         "llm_top_p",
         "llm_max_tokens",
         "bot_timezone",
+        "whisper_base_url",
+        "whisper_api_key",
+        "embeddings_base_url",
+        "embeddings_api_key",
         mode="before",
     )
     @classmethod
@@ -113,6 +146,28 @@ def is_owner(user_id: int | None, settings: Settings | None = None) -> bool:
     if current_settings.owner_telegram_id is None:
         return False
     return user_id == current_settings.owner_telegram_id
+
+
+def parse_allowed_ids(raw: str) -> frozenset[int]:
+    ids: set[int] = set()
+    for part in raw.replace(",", " ").split():
+        try:
+            ids.add(int(part))
+        except ValueError:
+            continue
+    return frozenset(ids)
+
+
+def is_allowed(user_id: int | None, settings: Settings | None = None) -> bool:
+    if user_id is None:
+        return False
+    current_settings = settings or get_settings()
+    if is_owner(user_id, current_settings):
+        return True
+    allowed = parse_allowed_ids(current_settings.allowed_telegram_ids)
+    if not allowed:
+        return True
+    return user_id in allowed
 
 
 def effective_timezone(settings: Settings | None = None) -> str:

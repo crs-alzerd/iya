@@ -69,6 +69,8 @@ class MemoryFactORM(Base):
     salience_score: Mapped[float] = mapped_column(Float, default=1.0, index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="active", index=True, nullable=False)
     superseded_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Эмбеддинг факта (JSON-список float). NULL — ещё не посчитан, backfill в фоне.
+    embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     last_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

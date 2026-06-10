@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Sequence
+from typing import AsyncIterator, Sequence
 
 from iya_bot.domain.models import (
     ChatMessage,
@@ -37,6 +37,31 @@ class LLMClient(ABC):
         telegram_user_id: int | None = None,
     ) -> LLMResponse:
         """Один шаг tool-calling: модель либо отвечает текстом, либо просит вызвать инструменты."""
+        raise NotImplementedError
+
+    async def complete_stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        kind: str = "dialogue",
+        telegram_user_id: int | None = None,
+    ) -> AsyncIterator[str]:
+        """Потоковый ответ: yield'ит дельты текста. Дефолт — один кусок без стриминга,
+        чтобы реализации и фейки без поддержки stream продолжали работать."""
+        yield await self.complete(messages, kind=kind, telegram_user_id=telegram_user_id)
+
+
+class SpeechTranscriber(ABC):
+    @abstractmethod
+    async def transcribe(self, audio: bytes, *, filename: str = "voice.ogg", language: str | None = None) -> str:
+        """Распознать речь в текст. Возвращает пустую строку, если распознать не удалось."""
+        raise NotImplementedError
+
+
+class EmbeddingClient(ABC):
+    @abstractmethod
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Эмбеддинги для списка текстов, в том же порядке."""
         raise NotImplementedError
 
 
@@ -111,6 +136,14 @@ class MemoryRepository(ABC):
 
     @abstractmethod
     async def archive_memory(self, telegram_user_id: int, memory_id: int) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_facts_missing_embedding(self, telegram_user_id: int, limit: int = 20) -> list[MemoryItem]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def set_fact_embedding(self, telegram_user_id: int, memory_id: int, embedding: list[float]) -> None:
         raise NotImplementedError
 
     @abstractmethod
