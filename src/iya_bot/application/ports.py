@@ -5,14 +5,23 @@ from datetime import datetime
 from typing import AsyncIterator, Sequence
 
 from iya_bot.domain.models import (
+    CalendarBinding,
+    CalendarEvent,
     ChatMessage,
+    Habit,
+    HabitCompletion,
     LLMRequestRecord,
     LLMResponse,
     MemoryItem,
     MemorySnapshot,
+    NoteLink,
+    NoteRef,
+    PlanningItem,
     RelationshipState,
+    Reminder,
     SearchResult,
     SelfState,
+    WorkflowStep,
 )
 
 
@@ -208,4 +217,187 @@ class ProactiveEventRepository(ABC):
 
     @abstractmethod
     async def has_pending_event(self, telegram_user_id: int, kind: str) -> bool:
+        raise NotImplementedError
+
+
+# === Planning-система: провайдеры (внешние интеграции за портами) ===
+# Реальные реализации (CalDAV/Google/Obsidian-FS/nanogpt/aiogram) подключаются
+# позже; на этом этапе используются mock-адаптеры из infrastructure.
+
+
+class CalendarProvider(ABC):
+    """Доступ к календарю владельца. Реальные адаптеры: CalDAV, Google, ICS (RO)."""
+
+    @abstractmethod
+    async def list_events(self, owner_id: int, start: datetime, end: datetime) -> list[CalendarEvent]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def create_event(self, event: CalendarEvent) -> CalendarEvent:
+        """Создать событие. Возвращает событие с проставленным external_id/id."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_event(self, event: CalendarEvent) -> CalendarEvent:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_event(self, owner_id: int, external_id: str) -> bool:
+        raise NotImplementedError
+
+
+class NotesProvider(ABC):
+    """Доступ к Obsidian-vault. Реальный адаптер: файловая система примонтированного vault."""
+
+    @abstractmethod
+    async def search(self, query: str, limit: int = 10) -> list[NoteRef]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def read_note(self, path: str) -> str | None:
+        """Текст заметки по относительному пути в vault или None, если её нет."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def write_note(self, path: str, content: str) -> None:
+        """Создать/перезаписать заметку целиком."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def append_note(self, path: str, text: str) -> None:
+        """Дописать текст в конец заметки (создать, если её нет)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_notes(self, folder: str | None = None) -> list[str]:
+        """Пути всех заметок (опционально внутри папки)."""
+        raise NotImplementedError
+
+
+class WorkflowEngine(ABC):
+    """Координация многошаговых действий: цель -> последовательность шагов."""
+
+    @abstractmethod
+    async def plan(self, goal: str, context: str | None = None) -> list[WorkflowStep]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def advance(self, steps: list[WorkflowStep], done_title: str) -> list[WorkflowStep]:
+        """Отметить шаг выполненным и вернуть обновлённую последовательность."""
+        raise NotImplementedError
+
+
+class NotificationProvider(ABC):
+    """Доставка сообщений владельцу. Реальный адаптер обернёт aiogram Bot."""
+
+    @abstractmethod
+    async def notify(self, owner_id: int, chat_id: int, text: str) -> None:
+        raise NotImplementedError
+
+
+class ModelProvider(ABC):
+    """LLM для planning-подсистемы (отдельно от диалогового LLMClient).
+
+    Реальный адаптер обернёт LLMRouter поверх nanogpt. Метод structured()
+    предназначен для запросов, где ожидается машиночитаемый (JSON-подобный)
+    ответ — декомпозиция целей, расписание и т.п.
+    """
+
+    @abstractmethod
+    async def generate(self, prompt: str) -> str:
+        raise NotImplementedError
+
+    async def structured(self, prompt: str) -> str:
+        """По умолчанию — обычная генерация. Адаптеры могут включить JSON-режим."""
+        return await self.generate(prompt)
+
+
+# === Planning-система: репозитории ===
+
+
+class PlanningRepository(ABC):
+    @abstractmethod
+    async def add_item(self, item: PlanningItem) -> PlanningItem:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_items(self, owner_id: int, *, include_done: bool = False, limit: int = 100) -> list[PlanningItem]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_status(self, owner_id: int, item_id: int, status: str) -> bool:
+        raise NotImplementedError
+
+
+class ReminderRepository(ABC):
+    @abstractmethod
+    async def add_reminder(self, reminder: Reminder) -> Reminder:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_due(self, now: datetime, limit: int = 50) -> list[Reminder]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_owner(self, owner_id: int, *, include_done: bool = False, limit: int = 100) -> list[Reminder]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def mark_sent(self, reminder_id: int) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def cancel(self, owner_id: int, reminder_id: int) -> bool:
+        raise NotImplementedError
+
+
+class HabitRepository(ABC):
+    @abstractmethod
+    async def add_habit(self, habit: Habit) -> Habit:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_habits(self, owner_id: int, *, include_archived: bool = False, limit: int = 100) -> list[Habit]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add_completion(self, completion: HabitCompletion) -> HabitCompletion:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_completions(self, habit_id: int, limit: int = 365) -> list[HabitCompletion]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_streak(self, habit_id: int, current_streak: int, last_completed_at: datetime) -> None:
+        raise NotImplementedError
+
+
+class CalendarRepository(ABC):
+    """БД-кэш событий и хранилище подключённых календарей (CalendarBinding)."""
+
+    @abstractmethod
+    async def add_binding(self, binding: CalendarBinding) -> CalendarBinding:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_bindings(self, owner_id: int) -> list[CalendarBinding]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def upsert_event(self, event: CalendarEvent) -> CalendarEvent:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_events(self, owner_id: int, start: datetime, end: datetime) -> list[CalendarEvent]:
+        raise NotImplementedError
+
+
+class NoteLinkRepository(ABC):
+    @abstractmethod
+    async def add_link(self, link: NoteLink) -> NoteLink:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_links(self, owner_id: int, *, planning_item_id: int | None = None) -> list[NoteLink]:
         raise NotImplementedError

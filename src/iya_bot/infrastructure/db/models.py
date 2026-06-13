@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, JSON, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, Time, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -197,6 +197,11 @@ class ReminderORM(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(16), index=True, default="pending", nullable=False)
+    # Planning-система (миграция 0004): различает разовые/повторяющиеся напоминания
+    # и подталкивания привычек, плюс связь с привычкой.
+    kind: Mapped[str] = mapped_column(String(16), default="one_off", nullable=False)
+    recurrence_rule: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    habit_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -220,3 +225,129 @@ class ProactiveEventORM(Base):
     fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# === Planning-система (миграция 0004): планы, привычки, календарь, заметки ===
+
+
+class PlanningItemORM(Base):
+    __tablename__ = "planning_items"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_users.telegram_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="todo", index=True, nullable=False)
+    priority: Mapped[str] = mapped_column(String(16), default="normal", nullable=False)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True, nullable=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True, nullable=True)
+    parent_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class HabitORM(Base):
+    __tablename__ = "habits"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_users.telegram_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    cadence: Mapped[str] = mapped_column(String(16), default="daily", nullable=False)
+    schedule_time: Mapped[time | None] = mapped_column(Time(timezone=False), nullable=True)
+    target_per_period: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    reminder_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    current_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class HabitCompletionORM(Base):
+    __tablename__ = "habit_completions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    habit_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("habits.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+
+
+class CalendarBindingORM(Base):
+    __tablename__ = "calendar_bindings"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_users.telegram_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    provider_kind: Mapped[str] = mapped_column(String(16), default="mock", nullable=False)
+    calendar_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Ссылка на секрет (имя env-переменной / запись в хранилище), не сам пароль.
+    credentials_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True, nullable=False)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class CalendarEventORM(Base):
+    __tablename__ = "calendar_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_users.telegram_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    binding_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("calendar_bindings.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    external_id: Mapped[str | None] = mapped_column(String(256), index=True, nullable=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    all_day: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(16), default="mock", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class NoteLinkORM(Base):
+    __tablename__ = "note_links"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_users.telegram_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    note_path: Mapped[str] = mapped_column(Text, nullable=False)
+    note_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    relation: Mapped[str] = mapped_column(String(16), default="reference", nullable=False)
+    planning_item_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
+    reminder_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
+    habit_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

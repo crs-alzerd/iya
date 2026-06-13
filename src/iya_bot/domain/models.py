@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any
 
 
@@ -155,3 +155,164 @@ class LLMRequestRecord:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
+
+
+# === Planning-система (Obsidian + календарь + планы/привычки) ===
+# Доменные сущности planning-подсистемы. Это чистые dataclass'ы без зависимостей
+# от инфраструктуры — их читают/возвращают сервисы (`application/planning`),
+# а провайдеры и репозитории отображают их в свои представления.
+
+
+@dataclass(frozen=True)
+class PlanningItem:
+    """Единица плана: задача или подзадача владельца.
+
+    parent_id связывает подзадачу с родительской задачей (декомпозиция цели).
+    scheduled_for — когда задача поставлена в расписание (с учётом занятости
+    календаря); due_at — крайний срок.
+    """
+
+    id: int
+    owner_id: int
+    title: str
+    description: str | None = None
+    status: str = "todo"
+    priority: str = "normal"
+    due_at: datetime | None = None
+    scheduled_for: datetime | None = None
+    parent_id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class Reminder:
+    """Напоминание, которое доставляется владельцу в заданное время.
+
+    kind различает разовое/повторяющееся напоминание и подталкивание привычки
+    (habit_nudge). recurrence_rule — текстовое правило повторения (например,
+    iCalendar RRULE); habit_id связывает habit_nudge с привычкой.
+    """
+
+    id: int
+    owner_id: int
+    chat_id: int
+    text: str
+    due_at: datetime
+    status: str = "pending"
+    kind: str = "one_off"
+    recurrence_rule: str | None = None
+    habit_id: int | None = None
+    created_at: datetime | None = None
+    sent_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class Habit:
+    """Привычка с заданной частотой и (опционально) временем напоминания.
+
+    current_streak/last_completed_at — производные от HabitCompletion, хранятся
+    денормализованно для быстрых ответов. target_per_period — сколько раз за
+    период (день/неделю/месяц) привычку нужно выполнить.
+    """
+
+    id: int
+    owner_id: int
+    title: str
+    cadence: str = "daily"
+    schedule_time: time | None = None
+    target_per_period: int = 1
+    reminder_enabled: bool = True
+    current_streak: int = 0
+    last_completed_at: datetime | None = None
+    status: str = "active"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class HabitCompletion:
+    """Один факт выполнения привычки. Источник истины для расчёта streak."""
+
+    id: int
+    habit_id: int
+    completed_at: datetime
+
+
+@dataclass(frozen=True)
+class CalendarEvent:
+    """Событие календаря. id присвоен Ией (БД-кэш), external_id — id у провайдера.
+
+    binding_id связывает событие с конкретным подключённым календарём
+    (CalendarBinding); source помечает происхождение (mock/caldav/google/ics).
+    """
+
+    id: int | None
+    owner_id: int
+    title: str
+    start_at: datetime
+    end_at: datetime
+    binding_id: int | None = None
+    external_id: str | None = None
+    all_day: bool = False
+    location: str | None = None
+    description: str | None = None
+    source: str = "mock"
+
+
+@dataclass(frozen=True)
+class CalendarBinding:
+    """Подключённый календарь владельца.
+
+    credentials_ref — ссылка на секрет (имя переменной окружения / запись в
+    хранилище секретов), а не сам пароль: plaintext-учётки в доменную модель
+    не кладём.
+    """
+
+    id: int
+    owner_id: int
+    provider_kind: str
+    calendar_name: str
+    url: str | None = None
+    credentials_ref: str | None = None
+    status: str = "active"
+    last_synced_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class NoteLink:
+    """Связь доменной сущности с заметкой Obsidian-vault по её пути.
+
+    relation описывает роль заметки (source/plan/log/reference). Опциональные
+    *_id привязывают заметку к задаче/напоминанию/привычке.
+    """
+
+    id: int
+    owner_id: int
+    note_path: str
+    relation: str = "reference"
+    note_title: str | None = None
+    planning_item_id: int | None = None
+    reminder_id: int | None = None
+    habit_id: int | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class NoteRef:
+    """Результат поиска по vault: путь к заметке, заголовок и фрагмент совпадения."""
+
+    path: str
+    title: str | None = None
+    snippet: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowStep:
+    """Один шаг координируемого многошагового действия (результат WorkflowEngine)."""
+
+    title: str
+    status: str = "pending"
+    detail: str | None = None
+    scheduled_for: datetime | None = None

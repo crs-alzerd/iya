@@ -30,6 +30,52 @@
 - Сериализация параллельных сообщений одного пользователя (per-user lock)
 - Docker Compose с явными именами контейнеров, сети и volume
 
+## Planning-система (Obsidian + календарь + планы/привычки) — фундамент
+
+Добавлен изолированный фундамент личного координатора: планы, привычки, календарь
+и заметки Obsidian. Построен по принципу **ports & adapters** — бизнес-логика
+зависит только от портов, а внешние интеграции **пока замокано** и подключаются
+позже без изменения сервисов.
+
+Подробности и схема: [`architecture/planning-system.md`](architecture/planning-system.md).
+
+Что добавлено:
+
+- **Domain-модели** (`domain/models.py`): `PlanningItem`, `Reminder`, `Habit`,
+  `HabitCompletion`, `CalendarEvent`, `CalendarBinding`, `NoteLink`, `NoteRef`,
+  `WorkflowStep`; статусы/виды — в `domain/enums.py`.
+- **Порты** (`application/ports.py`): `CalendarProvider`, `NotesProvider`,
+  `WorkflowEngine`, `NotificationProvider`, `ModelProvider` + репозитории
+  `Planning/Reminder/Habit/Calendar/NoteLink`.
+- **Сервисы** (`application/planning/`): `CalendarService` (свободные слоты),
+  `ReminderService` (разовые/повторяющиеся/habit-nudge), `NotesService`
+  (поиск/запись + `NoteLink`), `PlanningService` (оркестратор: цель → дерево
+  задач → раскладка по календарю → привычки и streak).
+- **Postgres-схема**: миграция `0004_planning_system` (новые таблицы + поля
+  `kind/recurrence_rule/habit_id` к существующей `reminders`).
+- **Тесты бизнес-логики** без сети и БД: `tests/test_planning_service.py`,
+  `test_calendar_service.py`, `test_reminder_service.py`, `test_notes_service.py`,
+  `test_workflow_engine.py` (mock-провайдеры + `tests/planning_fakes.py`).
+
+### Что пока замокано (и чем заменится)
+
+| Контур | Сейчас (mock) | Реальный адаптер (предстоит) |
+|---|---|---|
+| Календарь | `InMemoryCalendarProvider` | CalDAV / Google API / ICS (RO) |
+| Obsidian vault | `InMemoryNotesProvider` | ФС примонтированного vault (RO/RW) |
+| Координация | `DeterministicWorkflowEngine` | движок поверх `ModelProvider`/nanogpt |
+| Доставка | `CollectingNotificationProvider` | поверх aiogram `Bot` |
+| LLM планировщика | `CannedModelProvider` | поверх `LLMRouter` → nanogpt |
+
+### Чего ещё нет (следующий шаг)
+
+Слой **намеренно не подключён к живому контуру** — `main.py`, `dialogue.py`,
+`handlers.py`, APScheduler и tool-loop не изменены. Чтобы Ия начала реально
+планировать и напоминать, на следующем шаге нужно: реальные адаптеры провайдеров
+и секреты в конфиге; монтирование vault в `docker-compose.yml`; DI сервисов в
+`main.py` и APScheduler-job для `ReminderService.fire_due()`; новые tools и
+owner-команды; подмешивание агенды в контекст промпта.
+
 ## Структура проекта
 
 ```text

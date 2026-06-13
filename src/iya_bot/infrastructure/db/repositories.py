@@ -7,31 +7,50 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from iya_bot.application.ports import (
+    CalendarRepository,
+    HabitRepository,
     LLMRequestRepository,
     MemoryRepository,
     MessageRepository,
+    NoteLinkRepository,
+    PlanningRepository,
     ProactiveEventRepository,
     RelationshipStateRepository,
+    ReminderRepository,
     SelfStateRepository,
     UserRepository,
 )
 from iya_bot.domain.models import (
+    CalendarBinding,
+    CalendarEvent,
     ChatMessage,
+    Habit,
+    HabitCompletion,
     LLMRequestRecord,
     MemoryItem,
     MemorySnapshot,
+    NoteLink,
+    PlanningItem,
     RelationshipState,
+    Reminder,
     SelfState,
 )
 from iya_bot.infrastructure.db.models import (
+    CalendarBindingORM,
+    CalendarEventORM,
     ConversationSummaryORM,
+    HabitCompletionORM,
+    HabitORM,
     LLMRequestORM,
     MemoryFactORM,
     MemorySnapshotORM,
     MessageORM,
+    NoteLinkORM,
     PinnedMemoryORM,
+    PlanningItemORM,
     ProactiveEventORM,
     RelationshipStateORM,
+    ReminderORM,
     SelfStateORM,
     TelegramUserORM,
 )
@@ -528,3 +547,372 @@ class ProactiveEventDueRepository:
         async with self._session_factory() as session:
             await session.execute(stmt)
             await session.commit()
+
+
+# === Planning-система: репозитории ===
+
+
+def _to_planning_item(row: PlanningItemORM) -> PlanningItem:
+    return PlanningItem(
+        id=int(row.id),
+        owner_id=int(row.owner_id),
+        title=row.title,
+        description=row.description,
+        status=row.status,
+        priority=row.priority,
+        due_at=row.due_at,
+        scheduled_for=row.scheduled_for,
+        parent_id=int(row.parent_id) if row.parent_id is not None else None,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _to_reminder(row: ReminderORM) -> Reminder:
+    return Reminder(
+        id=int(row.id),
+        owner_id=int(row.telegram_user_id),
+        chat_id=int(row.chat_id),
+        text=row.text,
+        due_at=row.due_at,
+        status=row.status,
+        kind=row.kind,
+        recurrence_rule=row.recurrence_rule,
+        habit_id=int(row.habit_id) if row.habit_id is not None else None,
+        created_at=row.created_at,
+        sent_at=row.sent_at,
+    )
+
+
+def _to_habit(row: HabitORM) -> Habit:
+    return Habit(
+        id=int(row.id),
+        owner_id=int(row.owner_id),
+        title=row.title,
+        cadence=row.cadence,
+        schedule_time=row.schedule_time,
+        target_per_period=int(row.target_per_period),
+        reminder_enabled=bool(row.reminder_enabled),
+        current_streak=int(row.current_streak),
+        last_completed_at=row.last_completed_at,
+        status=row.status,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _to_calendar_event(row: CalendarEventORM) -> CalendarEvent:
+    return CalendarEvent(
+        id=int(row.id),
+        owner_id=int(row.owner_id),
+        title=row.title,
+        start_at=row.start_at,
+        end_at=row.end_at,
+        binding_id=int(row.binding_id) if row.binding_id is not None else None,
+        external_id=row.external_id,
+        all_day=bool(row.all_day),
+        location=row.location,
+        description=row.description,
+        source=row.source,
+    )
+
+
+def _to_calendar_binding(row: CalendarBindingORM) -> CalendarBinding:
+    return CalendarBinding(
+        id=int(row.id),
+        owner_id=int(row.owner_id),
+        provider_kind=row.provider_kind,
+        calendar_name=row.calendar_name,
+        url=row.url,
+        credentials_ref=row.credentials_ref,
+        status=row.status,
+        last_synced_at=row.last_synced_at,
+        created_at=row.created_at,
+    )
+
+
+def _to_note_link(row: NoteLinkORM) -> NoteLink:
+    return NoteLink(
+        id=int(row.id),
+        owner_id=int(row.owner_id),
+        note_path=row.note_path,
+        relation=row.relation,
+        note_title=row.note_title,
+        planning_item_id=int(row.planning_item_id) if row.planning_item_id is not None else None,
+        reminder_id=int(row.reminder_id) if row.reminder_id is not None else None,
+        habit_id=int(row.habit_id) if row.habit_id is not None else None,
+        created_at=row.created_at,
+    )
+
+
+class SqlAlchemyPlanningRepository(PlanningRepository):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def add_item(self, item: PlanningItem) -> PlanningItem:
+        async with self._session_factory() as session:
+            row = PlanningItemORM(
+                owner_id=item.owner_id,
+                title=item.title,
+                description=item.description,
+                status=item.status,
+                priority=item.priority,
+                due_at=item.due_at,
+                scheduled_for=item.scheduled_for,
+                parent_id=item.parent_id,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return _to_planning_item(row)
+
+    async def list_items(self, owner_id: int, *, include_done: bool = False, limit: int = 100) -> list[PlanningItem]:
+        stmt = select(PlanningItemORM).where(PlanningItemORM.owner_id == owner_id)
+        if not include_done:
+            stmt = stmt.where(PlanningItemORM.status.not_in(["done", "cancelled"]))
+        stmt = stmt.order_by(PlanningItemORM.scheduled_for.asc().nullslast(), PlanningItemORM.id.asc()).limit(limit)
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        return [_to_planning_item(row) for row in rows]
+
+    async def update_status(self, owner_id: int, item_id: int, status: str) -> bool:
+        stmt = (
+            update(PlanningItemORM)
+            .where(PlanningItemORM.owner_id == owner_id)
+            .where(PlanningItemORM.id == item_id)
+            .values(status=status, updated_at=datetime.now(UTC))
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            await session.commit()
+        return bool(result.rowcount)
+
+
+class SqlAlchemyReminderRepository(ReminderRepository):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def add_reminder(self, reminder: Reminder) -> Reminder:
+        async with self._session_factory() as session:
+            row = ReminderORM(
+                telegram_user_id=reminder.owner_id,
+                chat_id=reminder.chat_id,
+                text=reminder.text,
+                due_at=reminder.due_at,
+                status=reminder.status,
+                kind=reminder.kind,
+                recurrence_rule=reminder.recurrence_rule,
+                habit_id=reminder.habit_id,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return _to_reminder(row)
+
+    async def list_due(self, now: datetime, limit: int = 50) -> list[Reminder]:
+        stmt = (
+            select(ReminderORM)
+            .where(ReminderORM.status == "pending")
+            .where(ReminderORM.due_at <= now)
+            .order_by(ReminderORM.due_at.asc(), ReminderORM.id.asc())
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        return [_to_reminder(row) for row in rows]
+
+    async def list_for_owner(self, owner_id: int, *, include_done: bool = False, limit: int = 100) -> list[Reminder]:
+        stmt = select(ReminderORM).where(ReminderORM.telegram_user_id == owner_id)
+        if not include_done:
+            stmt = stmt.where(ReminderORM.status == "pending")
+        stmt = stmt.order_by(ReminderORM.due_at.asc(), ReminderORM.id.asc()).limit(limit)
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        return [_to_reminder(row) for row in rows]
+
+    async def mark_sent(self, reminder_id: int) -> None:
+        stmt = (
+            update(ReminderORM)
+            .where(ReminderORM.id == reminder_id)
+            .values(status="sent", sent_at=datetime.now(UTC))
+        )
+        async with self._session_factory() as session:
+            await session.execute(stmt)
+            await session.commit()
+
+    async def cancel(self, owner_id: int, reminder_id: int) -> bool:
+        stmt = (
+            update(ReminderORM)
+            .where(ReminderORM.telegram_user_id == owner_id)
+            .where(ReminderORM.id == reminder_id)
+            .where(ReminderORM.status == "pending")
+            .values(status="cancelled")
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            await session.commit()
+        return bool(result.rowcount)
+
+
+class SqlAlchemyHabitRepository(HabitRepository):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def add_habit(self, habit: Habit) -> Habit:
+        async with self._session_factory() as session:
+            row = HabitORM(
+                owner_id=habit.owner_id,
+                title=habit.title,
+                cadence=habit.cadence,
+                schedule_time=habit.schedule_time,
+                target_per_period=habit.target_per_period,
+                reminder_enabled=habit.reminder_enabled,
+                current_streak=habit.current_streak,
+                last_completed_at=habit.last_completed_at,
+                status=habit.status,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return _to_habit(row)
+
+    async def list_habits(self, owner_id: int, *, include_archived: bool = False, limit: int = 100) -> list[Habit]:
+        stmt = select(HabitORM).where(HabitORM.owner_id == owner_id)
+        if not include_archived:
+            stmt = stmt.where(HabitORM.status != "archived")
+        stmt = stmt.order_by(HabitORM.id.asc()).limit(limit)
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        return [_to_habit(row) for row in rows]
+
+    async def add_completion(self, completion: HabitCompletion) -> HabitCompletion:
+        async with self._session_factory() as session:
+            row = HabitCompletionORM(habit_id=completion.habit_id, completed_at=completion.completed_at)
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return HabitCompletion(id=int(row.id), habit_id=int(row.habit_id), completed_at=row.completed_at)
+
+    async def list_completions(self, habit_id: int, limit: int = 365) -> list[HabitCompletion]:
+        stmt = (
+            select(HabitCompletionORM)
+            .where(HabitCompletionORM.habit_id == habit_id)
+            .order_by(HabitCompletionORM.completed_at.desc(), HabitCompletionORM.id.desc())
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        return [HabitCompletion(id=int(row.id), habit_id=int(row.habit_id), completed_at=row.completed_at) for row in rows]
+
+    async def update_streak(self, habit_id: int, current_streak: int, last_completed_at: datetime) -> None:
+        stmt = (
+            update(HabitORM)
+            .where(HabitORM.id == habit_id)
+            .values(current_streak=current_streak, last_completed_at=last_completed_at, updated_at=datetime.now(UTC))
+        )
+        async with self._session_factory() as session:
+            await session.execute(stmt)
+            await session.commit()
+
+
+class SqlAlchemyCalendarRepository(CalendarRepository):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def add_binding(self, binding: CalendarBinding) -> CalendarBinding:
+        async with self._session_factory() as session:
+            row = CalendarBindingORM(
+                owner_id=binding.owner_id,
+                provider_kind=binding.provider_kind,
+                calendar_name=binding.calendar_name,
+                url=binding.url,
+                credentials_ref=binding.credentials_ref,
+                status=binding.status,
+                last_synced_at=binding.last_synced_at,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return _to_calendar_binding(row)
+
+    async def list_bindings(self, owner_id: int) -> list[CalendarBinding]:
+        stmt = select(CalendarBindingORM).where(CalendarBindingORM.owner_id == owner_id).order_by(CalendarBindingORM.id.asc())
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        return [_to_calendar_binding(row) for row in rows]
+
+    async def upsert_event(self, event: CalendarEvent) -> CalendarEvent:
+        async with self._session_factory() as session:
+            row: CalendarEventORM | None = None
+            if event.external_id is not None:
+                existing = await session.execute(
+                    select(CalendarEventORM)
+                    .where(CalendarEventORM.owner_id == event.owner_id)
+                    .where(CalendarEventORM.external_id == event.external_id)
+                )
+                row = existing.scalar_one_or_none()
+            if row is None:
+                row = CalendarEventORM(owner_id=event.owner_id, title=event.title, start_at=event.start_at, end_at=event.end_at)
+                session.add(row)
+            row.binding_id = event.binding_id
+            row.external_id = event.external_id
+            row.title = event.title
+            row.start_at = event.start_at
+            row.end_at = event.end_at
+            row.all_day = event.all_day
+            row.location = event.location
+            row.description = event.description
+            row.source = event.source
+            await session.commit()
+            await session.refresh(row)
+            return _to_calendar_event(row)
+
+    async def list_events(self, owner_id: int, start: datetime, end: datetime) -> list[CalendarEvent]:
+        stmt = (
+            select(CalendarEventORM)
+            .where(CalendarEventORM.owner_id == owner_id)
+            .where(CalendarEventORM.start_at < end)
+            .where(CalendarEventORM.end_at > start)
+            .order_by(CalendarEventORM.start_at.asc(), CalendarEventORM.id.asc())
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        return [_to_calendar_event(row) for row in rows]
+
+
+class SqlAlchemyNoteLinkRepository(NoteLinkRepository):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def add_link(self, link: NoteLink) -> NoteLink:
+        async with self._session_factory() as session:
+            row = NoteLinkORM(
+                owner_id=link.owner_id,
+                note_path=link.note_path,
+                note_title=link.note_title,
+                relation=link.relation,
+                planning_item_id=link.planning_item_id,
+                reminder_id=link.reminder_id,
+                habit_id=link.habit_id,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return _to_note_link(row)
+
+    async def list_links(self, owner_id: int, *, planning_item_id: int | None = None) -> list[NoteLink]:
+        stmt = select(NoteLinkORM).where(NoteLinkORM.owner_id == owner_id)
+        if planning_item_id is not None:
+            stmt = stmt.where(NoteLinkORM.planning_item_id == planning_item_id)
+        stmt = stmt.order_by(NoteLinkORM.id.asc())
+        async with self._session_factory() as session:
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        return [_to_note_link(row) for row in rows]
